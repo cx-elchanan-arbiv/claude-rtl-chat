@@ -1,0 +1,9 @@
+sessions.json
+usage.json
+_cache.json
+owned.json
+s-*.md
+*.log
+*.plist
+__pycache__/
+*.pyc

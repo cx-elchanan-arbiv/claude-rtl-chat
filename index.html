@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude · RTL Chat (V2)</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+  :root {
+    --bg: #1e1e2e; --fg: #e6e6e6; --muted: #9a9ab0; --accent: #89b4fa;
+    --code-bg: #181825; --border: #313244; --new: #a6e3a1;
+    --user: #f5c2e7;   /* "you" — warm pink, clearly distinct from Claude's white */
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, "SF Hebrew", "Arial Hebrew", "Segoe UI", system-ui, sans-serif;
+    font-size: 17px; line-height: 1.7; direction: rtl; text-align: right;
+    display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+    overscroll-behavior: none;            /* never let scroll trigger browser back/fwd */
+  }
+  /* header lives OUTSIDE the scroll area → it can never scroll away */
+  header { flex: 0 0 auto; background: var(--code-bg); border-bottom: 1px solid var(--border); }
+  #bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 16px; font-size: 13px; color: var(--muted);
+  }
+  #dot { width: 9px; height: 9px; border-radius: 50%; background: #f38ba8; transition: background .3s; }
+  #dot.live { background: var(--new); }
+  #histBtn {
+    margin-inline-start: auto; cursor: pointer; user-select: none;
+    border: 1px solid var(--border); border-radius: 7px; padding: 3px 10px;
+    color: var(--muted); background: var(--bg); font-size: 12px;
+  }
+  #histBtn.on { color: var(--fg); border-color: var(--accent); }
+  #tabs { display: flex; gap: 6px; overflow-x: auto; padding: 8px 16px 0;
+    overscroll-behavior-x: contain; scroll-behavior: smooth;
+    scrollbar-width: none; }                 /* hide strip scrollbar (wheel/trackpad still scroll) */
+  #tabs::-webkit-scrollbar { display: none; }
+  .tab, #histBtn, #content details.tool > summary, #content a { cursor: pointer; }
+  .tab {
+    flex: 0 0 auto; cursor: pointer; user-select: none;
+    padding: 6px 13px 8px; border: 1px solid var(--border); border-bottom: none;
+    border-radius: 9px 9px 0 0; background: var(--bg); color: var(--muted);
+    font-size: 14px; max-width: 270px; position: relative; line-height: 1.4;
+  }
+  .tab.active { color: var(--fg); border-color: var(--accent); }
+  .tab.hist { opacity: .72; }
+  .tab .name { font-weight: 600; font-size: 14.5px; display: block; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; max-width: 250px; }
+  .tab .sub { color: var(--muted); display: block; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; max-width: 250px; font-size: 12.5px; }
+  .tab .ping { display: none; position: absolute; top: 5px; inset-inline-start: 6px;
+    width: 7px; height: 7px; border-radius: 50%; background: var(--new); }
+  .tab.haschange .ping { display: block; }
+  /* the ONLY scrolling region */
+  #wrap { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; direction: ltr; }
+  #content { max-width: 860px; margin: 0 auto; padding: 22px 28px 90px; direction: rtl; text-align: right; }
+  #content h3 { line-height: 1.4; margin: 1.4em 0 .3em; color: var(--accent); font-size: 1em; }
+  /* per-turn separation: your messages get a warm tinted box, Claude's stay as-is */
+  #content .turn { border-radius: 12px; padding: 2px 18px 10px; margin: 22px 0; }
+  #content .turn.user {
+    color: var(--user); background: rgba(245,194,231,.07);
+    border-right: 3px solid var(--user);
+  }
+  #content .turn.user h3 { color: var(--user); }
+  #content .turn.user a { color: #f9c9ec; }
+  #content .turn.assistant { padding-inline: 0; }   /* Claude: clean, no box/line — just spacing */
+  /* collapsible tool actions (Edit/Write/Bash) + outputs */
+  #content details.tool {
+    margin: 8px 0; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--code-bg); direction: rtl;
+  }
+  #content details.tool > summary {
+    cursor: pointer; padding: 6px 12px; color: var(--muted); font-size: 13px;
+    list-style: none; user-select: none;
+  }
+  #content details.tool > summary::-webkit-details-marker { display: none; }
+  #content details.tool > summary::before { content: '▸ '; color: var(--muted); }
+  #content details.tool[open] > summary::before { content: '▾ '; }
+  #content details.tool[open] > summary { border-bottom: 1px solid var(--border); }
+  #content details.tool summary code { color: var(--accent); direction: ltr; unicode-bidi: embed; }
+  #content details.tool.result > summary code,
+  #content details.tool.result > summary { color: #7f849c; }
+  #content details.tool pre {
+    margin: 0; border: none; border-radius: 0 0 8px 8px;
+    max-height: 380px; overflow: auto; font-size: 13px;
+  }
+  #content a { color: var(--accent); }
+  #content code {
+    background: var(--code-bg); padding: .15em .4em; border-radius: 5px;
+    font-family: "SF Mono", Menlo, monospace; font-size: .9em;
+    direction: ltr; unicode-bidi: embed; display: inline-block;
+  }
+  #content pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; direction: ltr; text-align: left;
+  }
+  #content pre code { background: none; padding: 0; }
+  #content table { border-collapse: collapse; margin: 1em 0; width: 100%; }
+  #content th, #content td { border: 1px solid var(--border); padding: 7px 12px; text-align: right; }
+  #content th { background: var(--code-bg); }
+  #content blockquote { margin: 1em 0; padding: .2em 16px; border-right: 3px solid var(--accent); color: var(--muted); }
+  #content hr { border: none; border-top: 1px solid var(--border); margin: 1.6em 0; }
+  #content ul, #content ol { padding-right: 1.4em; padding-left: 0; }
+  #empty { color: var(--muted); text-align: center; margin-top: 60px; }
+  footer {
+    flex: 0 0 auto; background: var(--code-bg); border-top: 1px solid var(--border);
+    padding: 9px 18px; font-size: 15px; color: var(--muted);
+    display: flex; align-items: center; gap: 16px;
+  }
+  footer .max { color: var(--new); }
+  footer .max.warn { color: #f9e2af; }
+  footer .max.hot { color: #f38ba8; }
+  #newBtn {
+    cursor: pointer; user-select: none; border: 1px solid var(--accent);
+    border-radius: 7px; padding: 3px 11px; color: var(--accent);
+    background: var(--bg); font-size: 13px; margin-inline-start: 10px;
+  }
+  #compose {
+    flex: 0 0 auto; display: flex; gap: 8px; align-items: flex-end;
+    padding: 10px 16px; background: var(--code-bg); border-top: 1px solid var(--border);
+  }
+  #compose textarea {
+    flex: 1 1 auto; resize: none; min-height: 24px; max-height: 160px;
+    background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 9px 12px; font: inherit; font-size: 15px;
+    direction: rtl; text-align: right;
+  }
+  #compose textarea:disabled { opacity: .5; }
+  #sendBtn {
+    cursor: pointer; border: none; border-radius: 10px; padding: 9px 18px;
+    background: var(--accent); color: #1e1e2e; font-weight: 600; font-size: 15px;
+  }
+  #sendBtn:disabled { opacity: .4; cursor: default; }
+  #composeNote { color: var(--muted); font-size: 13px; padding: 8px 16px;
+    background: var(--code-bg); border-top: 1px solid var(--border); }
+</style>
+</head>
+<body>
+  <header>
+    <div id="bar">
+      <span id="dot"></span><span id="status">מתחבר…</span>
+      <span id="newBtn">➕ שיחה חדשה</span>
+      <span id="histBtn" style="display:none"></span>
+    </div>
+    <div id="tabs"></div>
+  </header>
+  <div id="wrap"><div id="content"><p id="empty">ממתין לסשנים…</p></div></div>
+  <div id="compose">
+    <textarea id="msg" rows="1" placeholder="כתוב הודעה ל-Claude…  (Enter לשליחה, Shift+Enter שורה חדשה)"></textarea>
+    <button id="sendBtn">שלח</button>
+  </div>
+  <div id="composeNote" style="display:none"></div>
+  <footer><span id="foot-max"></span><span id="foot-tok"></span></footer>
+<script>
+  if (window.marked) marked.setOptions({ breaks: true, gfm: true });
+  const elTabs = document.getElementById('tabs');
+  const elContent = document.getElementById('content');
+  const elWrap = document.getElementById('wrap');
+  const elDot = document.getElementById('dot');
+  const elStatus = document.getElementById('status');
+  const elHist = document.getElementById('histBtn');
+  const elFootTok = document.getElementById('foot-tok');
+  const elFootMax = document.getElementById('foot-max');
+  const elNew = document.getElementById('newBtn');
+  const elMsg = document.getElementById('msg');
+  const elSend = document.getElementById('sendBtn');
+  const elNote = document.getElementById('composeNote');
+  const elCompose = document.getElementById('compose');
+
+  function fmtTok(n) {
+    n = n || 0;
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return Math.round(n / 1e3) + 'k';
+    return '' + n;
+  }
+  function relTime(iso) {
+    const ms = new Date(iso).getTime() - Date.now();
+    if (isNaN(ms)) return '';
+    const m = Math.round(ms / 60000);
+    if (m <= 0) return 'עכשיו';
+    if (m < 60) return 'בעוד ' + m + ' דק׳';
+    return 'בעוד ' + Math.round(m / 60) + ' שע׳';
+  }
+  async function updateMax() {
+    try {
+      const res = await fetch('usage.json?t=' + Date.now(), { cache: 'no-store' });
+      if (!res.ok) throw 0;
+      const u = await res.json();
+      if (!u || u.percent_session == null || (Date.now() - u.fetched_at * 1000) > 10 * 60 * 1000) throw 0;
+      const p = u.percent_session;
+      const cls = p >= 85 ? 'hot' : p >= 60 ? 'warn' : '';
+      let t = 'Max: ' + p + '%';
+      if (u.reset_session) t += ' · ' + relTime(u.reset_session);
+      if (u.percent_week != null) t += '  ·  שבועי: ' + u.percent_week + '%';
+      elFootMax.className = 'max ' + cls;
+      elFootMax.textContent = t + '  ·  ';
+    } catch (e) {
+      elFootMax.textContent = '';   // soft fallback — token counter stays
+    }
+  }
+
+  let selectedId = localStorage.getItem('rtl-selected') || null;
+  let showHistory = localStorage.getItem('rtl-hist') === '1';
+  let seenMtime = {};
+  let lastMd = null;          // currently rendered markdown (change detection)
+  let lastSelected = null;
+
+  // vertical mouse-wheel scrolls the tab strip sideways (trackpad h-scroll still native)
+  elTabs.addEventListener('wheel', (e) => {
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+      elTabs.scrollLeft += e.deltaY;
+      e.preventDefault();
+    }
+  }, { passive: false });
+
+  elHist.onclick = () => {
+    showHistory = !showHistory;
+    localStorage.setItem('rtl-hist', showHistory ? '1' : '0');
+  };
+
+  // ---- bidirectional: new chat + send ----
+  elNew.onclick = async () => {
+    try {
+      const res = await fetch('/new', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const d = await res.json();
+      if (d.id) {
+        selectedId = d.id;
+        localStorage.setItem('rtl-selected', selectedId);
+        localStorage.setItem('rtl-name-' + d.id, 'שיחה חדשה');
+        lastMd = null; lastSelected = null;
+        elMsg.focus();
+        tick();
+      }
+    } catch (e) { /* ignore */ }
+  };
+
+  async function sendMsg() {
+    const text = elMsg.value.trim();
+    if (!text || !selectedId) return;
+    elMsg.value = ''; elMsg.style.height = 'auto';
+    elSend.disabled = true; elSend.textContent = 'שולח…';
+    try {
+      await fetch('/send', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: selectedId, text })
+      });
+    } catch (e) { /* ignore */ }
+    setTimeout(() => { elSend.disabled = false; elSend.textContent = 'שלח'; }, 600);
+  }
+  elSend.onclick = sendMsg;
+  elMsg.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+  });
+  elMsg.addEventListener('input', () => {   // auto-grow
+    elMsg.style.height = 'auto';
+    elMsg.style.height = Math.min(elMsg.scrollHeight, 160) + 'px';
+  });
+
+  // enable compose only for browser-owned chats; read-only note otherwise
+  function setCompose(sel) {
+    const owned = sel && sel.owned;
+    elCompose.style.display = owned ? 'flex' : 'none';
+    if (owned) { elNote.style.display = 'none'; return; }
+    elNote.style.display = sel ? 'block' : 'none';
+    if (sel) elNote.textContent = '👁️ שיחה זו נפתחה בטרמינל — צפייה בלבד. ל"➕ שיחה חדשה" כדי לכתוב.';
+  }
+
+  // group flat rendered output into per-turn boxes (h3 header starts a turn)
+  function decorateTurns() {
+    const kids = Array.from(elContent.children);
+    const frag = document.createDocumentFragment();
+    let box = null;
+    kids.forEach(el => {
+      if (el.tagName === 'H3') {
+        const isUser = el.textContent.indexOf('אתה') !== -1;
+        box = document.createElement('div');
+        box.className = 'turn ' + (isUser ? 'user' : 'assistant');
+        frag.appendChild(box);
+        box.appendChild(el);
+      } else if (el.tagName === 'HR') {
+        box = null;                 // separators are redundant now — drop them
+      } else if (box) {
+        box.appendChild(el);
+      } else {
+        frag.appendChild(el);
+      }
+    });
+    elContent.innerHTML = '';
+    elContent.appendChild(frag);
+  }
+
+  function fmtTime(ts) {
+    return new Date(ts * 1000).toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+  }
+  function esc(s) {
+    return (s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  }
+  // tab label: your custom name (saved) > first message of the session > project
+  function tabName(s) {
+    return localStorage.getItem('rtl-name-' + s.id) || s.title || s.project;
+  }
+
+  function makeTab(s, isHist) {
+    const tab = document.createElement('div');
+    tab.className = 'tab' + (s.id === selectedId ? ' active' : '') + (isHist ? ' hist' : '');
+    const changed = seenMtime[s.id] !== undefined && s.mtime > seenMtime[s.id];
+    if (changed && s.id !== selectedId) tab.classList.add('haschange');
+    tab.innerHTML = '<span class="ping"></span>' +
+      '<span class="name">' + esc(tabName(s)) + '</span>' +
+      '<span class="sub">' + esc(s.project) + ' · ' + fmtTime(s.mtime) + '</span>';
+    tab.title = 'דאבל-קליק לשינוי שם · ' + esc(s.short);
+    tab.onclick = () => {
+      selectedId = s.id;
+      localStorage.setItem('rtl-selected', selectedId);
+      seenMtime[s.id] = s.mtime;
+      lastMd = null; lastSelected = null;   // force re-render of new tab
+    };
+    tab.ondblclick = (e) => {
+      e.preventDefault();
+      const cur = localStorage.getItem('rtl-name-' + s.id) || '';
+      const v = prompt('שם לטאב (ריק = ברירת מחדל):', cur);
+      if (v === null) return;
+      if (v.trim()) localStorage.setItem('rtl-name-' + s.id, v.trim());
+      else localStorage.removeItem('rtl-name-' + s.id);
+      renderTabs(window._active || [], window._history || []);
+    };
+    return tab;
+  }
+
+  function renderTabs(active, history) {
+    elTabs.innerHTML = '';
+    active.forEach(s => elTabs.appendChild(makeTab(s, false)));
+    if (showHistory) history.forEach(s => elTabs.appendChild(makeTab(s, true)));
+  }
+
+  async function fetchContent(sel) {
+    if (!sel.md) {   // brand-new owned chat, no transcript yet
+      if (lastSelected !== sel.id || lastMd !== '__empty__') {
+        lastMd = '__empty__'; lastSelected = sel.id;
+        elContent.innerHTML = '<p id="empty">שיחה חדשה — כתוב הודעה למטה כדי להתחיל ✍️</p>';
+      }
+      return;
+    }
+    try {
+      const res = await fetch(sel.md + '?t=' + Date.now(), { cache: 'no-store' });
+      if (!res.ok) throw new Error(res.status);
+      const md = await res.text();
+      if (md === lastMd && sel.id === lastSelected) return;
+      const sameSession = (sel.id === lastSelected);
+      lastMd = md; lastSelected = sel.id;
+      // remember which tool blocks were open (same session only) so a 1s refresh
+      // doesn't collapse what you're reading
+      let openIdx = null;
+      if (sameSession) {
+        openIdx = new Set();
+        elContent.querySelectorAll('details.tool').forEach((d, i) => { if (d.open) openIdx.add(i); });
+      }
+      const atBottom = (elWrap.scrollTop + elWrap.clientHeight) >= (elWrap.scrollHeight - 90);
+      elContent.innerHTML = window.marked ? marked.parse(md)
+                                          : '<pre>' + md.replace(/</g, '&lt;') + '</pre>';
+      if (window.marked) decorateTurns();
+      if (openIdx) elContent.querySelectorAll('details.tool').forEach((d, i) => { if (openIdx.has(i)) d.open = true; });
+      if (atBottom) elWrap.scrollTop = elWrap.scrollHeight;
+    } catch (e) { /* keep last content on a transient miss */ }
+  }
+
+  async function tick() {
+    try {
+      const res = await fetch('sessions.json?t=' + Date.now(), { cache: 'no-store' });
+      if (!res.ok) throw new Error(res.status);
+      const data = await res.json();
+      const sessions = data.sessions || [];
+      const active = sessions.filter(s => s.active);
+      const history = sessions.filter(s => !s.active);
+      window._active = active; window._history = history;   // for instant re-render on rename
+      elDot.classList.add('live');
+      elStatus.textContent = 'חי · ' + active.length + ' פעיל' + (active.length === 1 ? '' : 'ים') +
+        ' · מתעדכן אוטומטית';
+      elHist.style.display = history.length ? 'inline-block' : 'none';
+      elHist.className = showHistory ? 'on' : '';
+      elHist.textContent = (showHistory ? '▾ ' : '▸ ') + 'היסטוריה (' + history.length + ')';
+
+      sessions.forEach(s => { if (seenMtime[s.id] === undefined) seenMtime[s.id] = s.mtime; });
+      const pool = showHistory ? sessions : (active.length ? active : sessions);
+      if (!selectedId || !pool.some(s => s.id === selectedId)) {
+        selectedId = pool.length ? pool[0].id : null;
+      }
+      renderTabs(active, history);
+
+      const sel = sessions.find(s => s.id === selectedId);
+      setCompose(sel);
+      if (sel) {
+        seenMtime[sel.id] = sel.mtime;
+        elFootTok.textContent = '🔤 ' + fmtTok(sel.tokens) + ' טוקנים · ' + fmtTok(sel.out) + ' out';
+        await fetchContent(sel);
+      } else { elContent.innerHTML = '<p id="empty">אין סשן נבחר…</p>'; }
+      updateMax();
+    } catch (e) {
+      elDot.classList.remove('live');
+      elStatus.textContent = 'אין חיבור לשרת (' + e.message + ')';
+    }
+  }
+  tick();
+  setInterval(tick, 1000);
+</script>
+</body>
+</html>
