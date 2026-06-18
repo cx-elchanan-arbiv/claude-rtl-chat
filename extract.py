@@ -255,6 +255,8 @@ def main():
                 used[projdir] = used.get(projdir, 0) + 1
         else:
             is_active = (now - mt) <= ACTIVE_SECONDS
+        if sid in owned:
+            is_active = True   # browser chats stay "open" even when no process runs
 
         new_cache[sid] = {"mtime": mt, "snippet": snippet, "turns": turns,
                           "tokens": tokens, "out": out, "title": title}
