@@ -147,8 +147,15 @@
   #chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px; background: var(--code-bg); }
   #chips:not(:empty) { padding: 8px 16px 0; }
   .chip { background: var(--bg); border: 1px solid var(--border); border-radius: 14px;
-    padding: 3px 10px; font-size: 12px; color: var(--fg); display: flex; gap: 6px; align-items: center; }
+    padding: 3px 10px 3px 6px; font-size: 12px; color: var(--fg); display: flex; gap: 6px; align-items: center; }
   .chip b { cursor: pointer; color: var(--muted); }
+  .chip img { width: 30px; height: 30px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); }
+  body.drag::after {
+    content: '⬇︎ שחרר כדי לצרף לשיחה'; position: fixed; inset: 0; z-index: 50;
+    display: flex; align-items: center; justify-content: center; font-size: 22px;
+    color: var(--accent); background: rgba(30,30,46,.78);
+    border: 3px dashed var(--accent); pointer-events: none;
+  }
 </style>
 </head>
 <body>
@@ -206,7 +213,8 @@
 
   function renderChips() {
     elChips.innerHTML = pendingFiles.map((f, i) =>
-      '<span class="chip">📎 ' + esc(f.name) + ' <b data-i="' + i + '">✕</b></span>').join('');
+      '<span class="chip">' + (f.thumb ? '<img src="' + f.thumb + '">' : '📎') +
+      ' ' + esc(f.name) + ' <b data-i="' + i + '">✕</b></span>').join('');
     elChips.querySelectorAll('b').forEach(b => b.onclick = () => {
       pendingFiles.splice(+b.dataset.i, 1); renderChips();
     });
@@ -215,17 +223,37 @@
     const data = await new Promise(res => {
       const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file);
     });
+    const thumb = (file.type || '').startsWith('image/') ? data : null;  // preview for images
     try {
       const res = await fetch('/upload', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: file.name || 'pasted', data })
       });
       const j = await res.json();
-      if (j.path) { pendingFiles.push({ path: j.path, name: j.name || file.name || 'קובץ' }); renderChips(); }
+      if (j.path) { pendingFiles.push({ path: j.path, name: j.name || file.name || 'קובץ', thumb }); renderChips(); }
     } catch (e) { /* ignore */ }
   }
   elAttach.onclick = () => elFile.click();
   elFile.onchange = () => { for (const f of elFile.files) uploadFile(f); elFile.value = ''; };
+
+  // drag & drop files anywhere on the page
+  let dragDepth = 0;
+  window.addEventListener('dragenter', (e) => {
+    if (e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')) {
+      e.preventDefault(); dragDepth++; document.body.classList.add('drag');
+    }
+  });
+  window.addEventListener('dragover', (e) => {
+    if (e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')) e.preventDefault();
+  });
+  window.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('drag'); } });
+  window.addEventListener('drop', (e) => {
+    if (e.dataTransfer && e.dataTransfer.files.length) {
+      e.preventDefault();
+      for (const f of e.dataTransfer.files) uploadFile(f);
+    }
+    dragDepth = 0; document.body.classList.remove('drag');
+  });
 
   function fmtTok(n) {
     n = n || 0;
