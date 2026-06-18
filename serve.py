@@ -123,6 +123,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 d = read_owned()
                 d[sid] = {"created": int(time.time()), "title": "שיחה חדשה"}
                 write_owned(d)
+            try:
+                extract.main()   # surface the placeholder immediately (no 1s wait)
+            except Exception:
+                pass
             return self._json(200, {"id": sid})
 
         if self.path == "/send":

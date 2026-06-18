@@ -207,6 +207,7 @@
   let seenMtime = {};
   let lastMd = null;          // currently rendered markdown (change detection)
   let lastSelected = null;
+  let pendingId = null;       // a just-created chat that may not be in sessions.json yet
 
   // vertical mouse-wheel scrolls the tab strip sideways (trackpad h-scroll still native)
   elTabs.addEventListener('wheel', (e) => {
@@ -228,6 +229,7 @@
       const d = await res.json();
       if (d.id) {
         selectedId = d.id;
+        pendingId = d.id;     // keep it selected even before it lands in sessions.json
         localStorage.setItem('rtl-selected', selectedId);
         localStorage.setItem('rtl-name-' + d.id, 'שיחה חדשה');
         lastMd = null; lastSelected = null;
@@ -385,12 +387,18 @@
 
       sessions.forEach(s => { if (seenMtime[s.id] === undefined) seenMtime[s.id] = s.mtime; });
       const pool = showHistory ? sessions : (active.length ? active : sessions);
-      if (!selectedId || !pool.some(s => s.id === selectedId)) {
+      // don't reset away from a chat we just created (it may not be in the index yet)
+      if (!selectedId || (!pool.some(s => s.id === selectedId) && selectedId !== pendingId)) {
         selectedId = pool.length ? pool[0].id : null;
       }
+      if (pendingId && sessions.some(s => s.id === pendingId)) pendingId = null;  // it landed
       renderTabs(active, history);
 
-      const sel = sessions.find(s => s.id === selectedId);
+      let sel = sessions.find(s => s.id === selectedId);
+      // synthesize a placeholder if the just-created chat hasn't been indexed yet
+      if (!sel && selectedId && selectedId === pendingId) {
+        sel = { id: selectedId, owned: true, md: null, tokens: 0, out: 0, mtime: 0 };
+      }
       setCompose(sel);
       if (sel) {
         seenMtime[sel.id] = sel.mtime;
