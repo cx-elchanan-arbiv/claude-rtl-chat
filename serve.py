@@ -15,6 +15,7 @@ import glob
 import http.server
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -25,6 +26,13 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 PORT = 7778
 OWNED = os.path.join(BASE, "owned.json")
 PROJECTS = os.path.expanduser("~/.claude/projects")
+
+# launchd runs with a minimal PATH, so resolve claude absolutely + give it a real PATH.
+CLAUDE_BIN = (os.path.expanduser("~/.local/bin/claude")
+              if os.path.exists(os.path.expanduser("~/.local/bin/claude"))
+              else (shutil.which("claude") or "claude"))
+CHILD_PATH = (os.path.expanduser("~/.local/bin") + ":/opt/homebrew/bin:"
+              "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
 
 # Where browser-started chats run. Change to a project path to let Read/Grep see it.
 DEFAULT_CWD = os.path.expanduser("~")
@@ -73,10 +81,12 @@ def run_claude(sid, text):
     """Blocking claude -p run; reply is written to the transcript by Claude Code."""
     first = not transcript_exists(sid)
     sess = ["--session-id", sid] if first else ["--resume", sid]
-    cmd = ["claude", "-p", text, *sess, *PERM]
+    cmd = [CLAUDE_BIN, "-p", text, *sess, *PERM]
+    env = os.environ.copy()
+    env["PATH"] = CHILD_PATH
     try:
         r = subprocess.run(cmd, cwd=DEFAULT_CWD, capture_output=True, text=True,
-                           timeout=600)
+                           timeout=600, env=env)
         if r.returncode != 0:
             print(f"[send {sid[:8]}] rc={r.returncode} {r.stderr[:300]}", flush=True)
     except Exception as e:
