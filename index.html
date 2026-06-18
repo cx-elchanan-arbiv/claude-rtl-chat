@@ -136,6 +136,19 @@
   #sendBtn:disabled { opacity: .4; cursor: default; }
   #composeNote { color: var(--muted); font-size: 13px; padding: 8px 16px;
     background: var(--code-bg); border-top: 1px solid var(--border); }
+  #dirSel {
+    margin-inline-start: 8px; background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 7px; padding: 3px 8px; font-size: 13px;
+  }
+  #attachBtn {
+    cursor: pointer; user-select: none; border: 1px solid var(--border);
+    border-radius: 10px; padding: 9px 12px; background: var(--bg); color: var(--fg); font-size: 16px;
+  }
+  #chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px; background: var(--code-bg); }
+  #chips:not(:empty) { padding: 8px 16px 0; }
+  .chip { background: var(--bg); border: 1px solid var(--border); border-radius: 14px;
+    padding: 3px 10px; font-size: 12px; color: var(--fg); display: flex; gap: 6px; align-items: center; }
+  .chip b { cursor: pointer; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -143,13 +156,17 @@
     <div id="bar">
       <span id="dot"></span><span id="status">מתחבר…</span>
       <span id="newBtn">➕ שיחה חדשה</span>
+      <select id="dirSel" title="באיזו תיקייה תרוץ השיחה החדשה"></select>
       <span id="histBtn" style="display:none"></span>
     </div>
     <div id="tabs"></div>
   </header>
   <div id="wrap"><div id="content"><p id="empty">ממתין לסשנים…</p></div></div>
+  <div id="chips"></div>
   <div id="compose">
-    <textarea id="msg" rows="1" placeholder="כתוב הודעה ל-Claude…  (Enter לשליחה, Shift+Enter שורה חדשה)"></textarea>
+    <button id="attachBtn" title="צרף קובץ או תמונה">📎</button>
+    <input type="file" id="fileInput" multiple style="display:none">
+    <textarea id="msg" rows="1" placeholder="כתוב הודעה ל-Claude…  (Enter לשליחה, Shift+Enter שורה חדשה, אפשר להדביק תמונה)"></textarea>
     <button id="sendBtn">שלח</button>
   </div>
   <div id="composeNote" style="display:none"></div>
@@ -169,6 +186,46 @@
   const elSend = document.getElementById('sendBtn');
   const elNote = document.getElementById('composeNote');
   const elCompose = document.getElementById('compose');
+  const elDirSel = document.getElementById('dirSel');
+  const elAttach = document.getElementById('attachBtn');
+  const elFile = document.getElementById('fileInput');
+  const elChips = document.getElementById('chips');
+  let pendingFiles = [];   // [{path, name}] uploaded, to attach to the next message
+
+  // populate the folder picker once
+  (async () => {
+    try {
+      const d = await (await fetch('/dirs')).json();
+      elDirSel.innerHTML = (d.dirs || []).map(x =>
+        '<option value="' + esc(x.path) + '">' + esc(x.label) + '</option>').join('');
+      const saved = localStorage.getItem('rtl-dir');
+      if (saved && (d.dirs || []).some(x => x.path === saved)) elDirSel.value = saved;
+    } catch (e) { /* ignore */ }
+  })();
+  elDirSel.onchange = () => localStorage.setItem('rtl-dir', elDirSel.value);
+
+  function renderChips() {
+    elChips.innerHTML = pendingFiles.map((f, i) =>
+      '<span class="chip">📎 ' + esc(f.name) + ' <b data-i="' + i + '">✕</b></span>').join('');
+    elChips.querySelectorAll('b').forEach(b => b.onclick = () => {
+      pendingFiles.splice(+b.dataset.i, 1); renderChips();
+    });
+  }
+  async function uploadFile(file) {
+    const data = await new Promise(res => {
+      const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file);
+    });
+    try {
+      const res = await fetch('/upload', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: file.name || 'pasted', data })
+      });
+      const j = await res.json();
+      if (j.path) { pendingFiles.push({ path: j.path, name: j.name || file.name || 'קובץ' }); renderChips(); }
+    } catch (e) { /* ignore */ }
+  }
+  elAttach.onclick = () => elFile.click();
+  elFile.onchange = () => { for (const f of elFile.files) uploadFile(f); elFile.value = ''; };
 
   function fmtTok(n) {
     n = n || 0;
@@ -225,9 +282,13 @@
   // ---- bidirectional: new chat + send ----
   elNew.onclick = async () => {
     try {
-      const res = await fetch('/new', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const res = await fetch('/new', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cwd: elDirSel.value || undefined })
+      });
       const d = await res.json();
       if (d.id) {
+        pendingFiles = []; renderChips();
         selectedId = d.id;
         pendingId = d.id;     // keep it selected even before it lands in sessions.json
         localStorage.setItem('rtl-selected', selectedId);
@@ -241,13 +302,15 @@
 
   async function sendMsg() {
     const text = elMsg.value.trim();
-    if (!text || !selectedId) return;
+    const files = pendingFiles.map(f => f.path);
+    if ((!text && !files.length) || !selectedId) return;
     elMsg.value = ''; elMsg.style.height = 'auto';
+    pendingFiles = []; renderChips();
     elSend.disabled = true; elSend.textContent = 'שולח…';
     try {
       await fetch('/send', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: selectedId, text })
+        body: JSON.stringify({ id: selectedId, text, files })
       });
     } catch (e) { /* ignore */ }
     setTimeout(() => { elSend.disabled = false; elSend.textContent = 'שלח'; }, 600);
@@ -259,6 +322,11 @@
   elMsg.addEventListener('input', () => {   // auto-grow
     elMsg.style.height = 'auto';
     elMsg.style.height = Math.min(elMsg.scrollHeight, 160) + 'px';
+  });
+  // paste images/files straight into the chat
+  elMsg.addEventListener('paste', (e) => {
+    const items = (e.clipboardData && e.clipboardData.files) || [];
+    if (items.length) { e.preventDefault(); for (const f of items) uploadFile(f); }
   });
 
   // enable compose only for browser-owned chats; read-only note otherwise

@@ -7,3 +7,6 @@ s-*.md
 *.plist
 __pycache__/
 *.pyc
+
+uploads/
+owned.json

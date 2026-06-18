@@ -274,7 +274,8 @@ def main():
         if oid in seen_ids:
             continue
         sessions.append({
-            "id": oid, "short": oid[:8], "project": "chat",
+            "id": oid, "short": oid[:8],
+            "project": os.path.basename((meta.get("cwd") or "chat").rstrip("/")) or "chat",
             "snippet": "", "title": meta.get("title", "שיחה חדשה"),
             "mtime": meta.get("created", int(now)), "turns": 0,
             "tokens": 0, "out": 0, "active": True, "owned": True, "md": None,

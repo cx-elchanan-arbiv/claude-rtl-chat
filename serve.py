@@ -11,10 +11,12 @@
 
 Fully self-contained — shares no files with V1; both only READ ~/.claude/projects.
 """
+import base64
 import glob
 import http.server
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -34,8 +36,11 @@ CLAUDE_BIN = (os.path.expanduser("~/.local/bin/claude")
 CHILD_PATH = (os.path.expanduser("~/.local/bin") + ":/opt/homebrew/bin:"
               "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
 
-# Where browser-started chats run. Change to a project path to let Read/Grep see it.
+# Where browser-started chats run by default (can be overridden per chat in the UI).
 DEFAULT_CWD = os.path.expanduser("~")
+PROJECTS_PARENT = os.path.expanduser("~/Projects")   # offered in the dir picker
+UPLOADS = os.path.join(BASE, "uploads")              # pasted/attached files land here
+os.makedirs(UPLOADS, exist_ok=True)
 
 # Permission level for browser-run Claude. SAFE default: read/plan/answer only.
 # Full power: replace with ["--permission-mode", "acceptEdits"] or
@@ -79,13 +84,17 @@ def transcript_exists(sid):
 
 def run_claude(sid, text):
     """Blocking claude -p run; reply is written to the transcript by Claude Code."""
+    cwd = (read_owned().get(sid) or {}).get("cwd") or DEFAULT_CWD
+    if not os.path.isdir(cwd):
+        cwd = DEFAULT_CWD
     first = not transcript_exists(sid)
     sess = ["--session-id", sid] if first else ["--resume", sid]
-    cmd = [CLAUDE_BIN, "-p", text, *sess, *PERM]
+    # --add-dir UPLOADS so Claude's Read tool can open pasted/attached files
+    cmd = [CLAUDE_BIN, "-p", text, *sess, "--add-dir", UPLOADS, *PERM]
     env = os.environ.copy()
     env["PATH"] = CHILD_PATH
     try:
-        r = subprocess.run(cmd, cwd=DEFAULT_CWD, capture_output=True, text=True,
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
                            timeout=600, env=env)
         if r.returncode != 0:
             print(f"[send {sid[:8]}] rc={r.returncode} {r.stderr[:300]}", flush=True)
@@ -96,6 +105,19 @@ def run_claude(sid, text):
 def handle_send(sid, text):
     with _lock_for(sid):   # one run per session at a time
         run_claude(sid, text)
+
+
+def list_dirs():
+    """Folders offered in the new-chat picker: home + ~/Projects/* subdirs."""
+    out = [{"path": os.path.expanduser("~"), "label": "🏠 בית (~)"}]
+    try:
+        for name in sorted(os.listdir(PROJECTS_PARENT)):
+            p = os.path.join(PROJECTS_PARENT, name)
+            if os.path.isdir(p) and not name.startswith("."):
+                out.append({"path": p, "label": "📁 " + name})
+    except Exception:
+        pass
+    return out
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -110,6 +132,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_GET(self):
+        if self.path.split("?")[0] == "/dirs":
+            return self._json(200, {"dirs": list_dirs()})
+        return super().do_GET()
+
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0) or 0)
         try:
@@ -119,23 +146,44 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         if self.path == "/new":
             sid = str(uuid.uuid4())
+            cwd = body.get("cwd") or DEFAULT_CWD
+            if not os.path.isdir(cwd):
+                cwd = DEFAULT_CWD
             with _owned_lock:
                 d = read_owned()
-                d[sid] = {"created": int(time.time()), "title": "שיחה חדשה"}
+                d[sid] = {"created": int(time.time()), "title": "שיחה חדשה", "cwd": cwd}
                 write_owned(d)
             try:
                 extract.main()   # surface the placeholder immediately (no 1s wait)
             except Exception:
                 pass
-            return self._json(200, {"id": sid})
+            return self._json(200, {"id": sid, "cwd": cwd})
+
+        if self.path == "/upload":
+            name = os.path.basename(body.get("name") or "file")
+            data = body.get("data") or ""
+            if "," in data:                       # strip data: URL prefix if present
+                data = data.split(",", 1)[1]
+            safe = re.sub(r"[^A-Za-z0-9._-]", "_", name) or "file"
+            dest = os.path.join(UPLOADS, f"{uuid.uuid4().hex[:8]}_{safe}")
+            try:
+                with open(dest, "wb") as fh:
+                    fh.write(base64.b64decode(data))
+            except Exception as e:
+                return self._json(400, {"error": f"bad upload: {e}"})
+            return self._json(200, {"path": dest, "name": name})
 
         if self.path == "/send":
             sid, text = body.get("id"), (body.get("text") or "").strip()
-            if not sid or not text:
+            files = body.get("files") or []
+            if not sid or (not text and not files):
                 return self._json(400, {"error": "missing id/text"})
             with _owned_lock:                      # only browser-owned chats are writable
                 if sid not in read_owned():
                     return self._json(403, {"error": "not an owned session"})
+            if files:
+                refs = ", ".join(files)
+                text = (text + f"\n\n[קבצים מצורפים — קרא אותם עם הכלי Read: {refs}]").strip()
             threading.Thread(target=handle_send, args=(sid, text), daemon=True).start()
             return self._json(200, {"status": "started"})
 
