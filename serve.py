@@ -58,6 +58,38 @@ _locks_guard = threading.Lock()
 _status = {}           # id -> {state, started, detail, tokens} live "working" indicator
 _status_lock = threading.Lock()
 
+_procs = {}            # id -> running claude Popen (for /stop)
+_procs_lock = threading.Lock()
+
+
+def heal_transcript(sid):
+    """Strip trailing invalid-JSON line(s) a prior kill may have left, so --resume
+    doesn't choke. (Documented corruption risk of killing claude -p mid-write.)"""
+    path = next(iter(glob.glob(os.path.join(PROJECTS, "*", f"{sid}.jsonl"))), None)
+    if not path:
+        return
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception:
+        return
+    changed = False
+    while lines:
+        last = lines[-1].strip()
+        if not last:
+            lines.pop(); changed = True; continue
+        try:
+            json.loads(last); break
+        except Exception:
+            lines.pop(); changed = True
+    if changed:
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+            print(f"[heal {sid[:8]}] trimmed trailing invalid line(s)", flush=True)
+        except Exception:
+            pass
+
 
 def set_status(sid, **kw):
     with _status_lock:
@@ -105,6 +137,8 @@ def run_claude(sid, text):
     if not os.path.isdir(cwd):
         cwd = DEFAULT_CWD
     first = not transcript_exists(sid)
+    if not first:
+        heal_transcript(sid)   # safety net: a prior /stop may have left a half-written line
     sess = ["--session-id", sid] if first else ["--resume", sid]
     cmd = [CLAUDE_BIN, "-p", text, *sess, "--add-dir", UPLOADS,
            "--output-format", "stream-json", "--include-partial-messages", "--verbose", *PERM]
@@ -114,6 +148,8 @@ def run_claude(sid, text):
     try:
         proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, text=True, env=env)
+        with _procs_lock:
+            _procs[sid] = proc
         for line in proc.stdout:
             line = line.strip()
             if not line:
@@ -145,6 +181,8 @@ def run_claude(sid, text):
     except Exception as e:
         print(f"[send {sid[:8]}] error: {e}", flush=True)
     finally:
+        with _procs_lock:
+            _procs.pop(sid, None)
         clear_status(sid)
 
 
@@ -235,6 +273,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 pass
             return self._json(200, {"status": "closed"})
+
+        if self.path == "/stop":
+            sid = body.get("id")
+            with _procs_lock:
+                proc = _procs.get(sid)
+            if proc and proc.poll() is None:
+                proc.terminate()              # SIGTERM (graceful); run loop will clean up
+                return self._json(200, {"status": "stopping"})
+            return self._json(200, {"status": "not-running"})
 
         if self.path == "/send":
             sid, text = body.get("id"), (body.get("text") or "").strip()

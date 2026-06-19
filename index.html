@@ -163,6 +163,9 @@
   #working .pdot { width: 9px; height: 9px; border-radius: 50%;
     background: var(--accent); animation: pulse 1.1s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .25; transform: scale(.7); } }
+  #stopBtn { margin-inline-start: auto; cursor: pointer; border: 1px solid #f38ba8;
+    color: #f38ba8; background: transparent; border-radius: 8px; padding: 4px 12px; font-size: 13px; }
+  #stopBtn:hover { background: #f38ba8; color: #1e1e2e; }
   body.drag::after {
     content: '⬇︎ שחרר כדי לצרף לשיחה'; position: fixed; inset: 0; z-index: 50;
     display: flex; align-items: center; justify-content: center; font-size: 22px;
@@ -230,7 +233,16 @@
     let txt = workLabel(st) + ' · ' + t;
     if (st.tokens) txt += ' · ' + fmtTok(st.tokens) + ' טוקנים';
     elWorking.className = 'on';
-    elWorking.innerHTML = '<span class="pdot"></span><span>' + esc(txt) + '</span>';
+    elWorking.innerHTML = '<span class="pdot"></span><span>' + esc(txt) + '</span>' +
+      '<button id="stopBtn" title="עצור (כמו ESC) — אפשר אז לתקן/להוסיף">⏹ עצור</button>';
+    const sb = document.getElementById('stopBtn');
+    if (sb) sb.onclick = async () => {
+      sb.disabled = true; sb.textContent = 'עוצר…';
+      try {
+        await fetch('/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: selectedId }) });
+      } catch (e) { /* ignore */ }
+    };
   }
 
   // populate the folder picker once
