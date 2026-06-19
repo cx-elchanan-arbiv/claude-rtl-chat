@@ -149,7 +149,12 @@
   .chip { background: var(--bg); border: 1px solid var(--border); border-radius: 14px;
     padding: 3px 10px 3px 6px; font-size: 12px; color: var(--fg); display: flex; gap: 6px; align-items: center; }
   .chip b { cursor: pointer; color: var(--muted); }
-  .chip img { width: 30px; height: 30px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); }
+  .chip img { width: 46px; height: 46px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); }
+  .tab .close { display: none; position: absolute; top: 4px; inset-inline-end: 7px;
+    cursor: pointer; color: var(--muted); font-size: 13px; line-height: 1; }
+  .tab .close:hover { color: #f38ba8; }
+  .tab.owned .close { display: block; }
+  .tab.owned { padding-inline-end: 22px; }
   body.drag::after {
     content: '⬇︎ שחרר כדי לצרף לשיחה'; position: fixed; inset: 0; z-index: 50;
     display: flex; align-items: center; justify-content: center; font-size: 22px;
@@ -403,13 +408,23 @@
 
   function makeTab(s, isHist) {
     const tab = document.createElement('div');
-    tab.className = 'tab' + (s.id === selectedId ? ' active' : '') + (isHist ? ' hist' : '');
+    tab.className = 'tab' + (s.id === selectedId ? ' active' : '') + (isHist ? ' hist' : '') +
+      (s.owned ? ' owned' : '');
     const changed = seenMtime[s.id] !== undefined && s.mtime > seenMtime[s.id];
     if (changed && s.id !== selectedId) tab.classList.add('haschange');
     tab.innerHTML = '<span class="ping"></span>' +
+      (s.owned ? '<span class="close" title="סגור שיחה (תעבור להיסטוריה)">✕</span>' : '') +
       '<span class="name">' + esc(tabName(s)) + '</span>' +
       '<span class="sub">' + esc(s.project) + ' · ' + fmtTime(s.mtime) + '</span>';
     tab.title = 'דאבל-קליק לשינוי שם · ' + esc(s.short);
+    const closeEl = tab.querySelector('.close');
+    if (closeEl) closeEl.onclick = (e) => {
+      e.stopPropagation();
+      if (s.id === selectedId) { selectedId = null; pendingId = null; lastMd = null; lastSelected = null; }
+      localStorage.removeItem('rtl-name-' + s.id);
+      fetch('/close', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: s.id }) }).then(() => tick());
+    };
     tab.onclick = () => {
       selectedId = s.id;
       localStorage.setItem('rtl-selected', selectedId);

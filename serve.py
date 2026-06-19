@@ -173,6 +173,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json(400, {"error": f"bad upload: {e}"})
             return self._json(200, {"path": dest, "name": name})
 
+        if self.path == "/close":
+            sid = body.get("id")
+            with _owned_lock:
+                d = read_owned()
+                if sid in d:
+                    del d[sid]            # no longer browser-owned → drops to history
+                    write_owned(d)
+            try:
+                extract.main()
+            except Exception:
+                pass
+            return self._json(200, {"status": "closed"})
+
         if self.path == "/send":
             sid, text = body.get("id"), (body.get("text") or "").strip()
             files = body.get("files") or []
