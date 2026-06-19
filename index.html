@@ -155,6 +155,14 @@
   .tab .close:hover { color: #f38ba8; }
   .tab.owned .close { display: block; }
   .tab.owned { padding-inline-end: 22px; }
+  .tab.busy .name::before { content: '⏳ '; }
+  #working { display: none; flex: 0 0 auto; align-items: center; gap: 9px;
+    padding: 8px 16px; font-size: 14px; color: var(--accent);
+    background: var(--code-bg); border-top: 1px solid var(--border); }
+  #working.on { display: flex; }
+  #working .pdot { width: 9px; height: 9px; border-radius: 50%;
+    background: var(--accent); animation: pulse 1.1s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .25; transform: scale(.7); } }
   body.drag::after {
     content: '⬇︎ שחרר כדי לצרף לשיחה'; position: fixed; inset: 0; z-index: 50;
     display: flex; align-items: center; justify-content: center; font-size: 22px;
@@ -174,6 +182,7 @@
     <div id="tabs"></div>
   </header>
   <div id="wrap"><div id="content"><p id="empty">ממתין לסשנים…</p></div></div>
+  <div id="working"></div>
   <div id="chips"></div>
   <div id="compose">
     <button id="attachBtn" title="צרף קובץ או תמונה">📎</button>
@@ -203,6 +212,26 @@
   const elFile = document.getElementById('fileInput');
   const elChips = document.getElementById('chips');
   let pendingFiles = [];   // [{path, name}] uploaded, to attach to the next message
+  const elWorking = document.getElementById('working');
+  let statusMap = {};      // id -> {state, started, detail, tokens} live indicator
+
+  function workLabel(st) {
+    const s = st.state;
+    if (s === 'tool') return '🔧 מריץ: ' + (st.detail || 'כלי');
+    if (s === 'responding') return '✍️ כותב';
+    if (s === 'thinking') return '🤔 חושב';
+    return '⏳ עובד';
+  }
+  function renderWorking() {
+    const st = statusMap[selectedId];
+    if (!st) { elWorking.className = ''; elWorking.innerHTML = ''; return; }
+    const secs = st.started ? Math.max(0, Math.floor(Date.now() / 1000 - st.started)) : 0;
+    const t = secs < 60 ? secs + ' שנ׳' : Math.floor(secs / 60) + ' דק׳ ' + (secs % 60) + ' שנ׳';
+    let txt = workLabel(st) + ' · ' + t;
+    if (st.tokens) txt += ' · ' + fmtTok(st.tokens) + ' טוקנים';
+    elWorking.className = 'on';
+    elWorking.innerHTML = '<span class="pdot"></span><span>' + esc(txt) + '</span>';
+  }
 
   // populate the folder picker once
   (async () => {
@@ -409,7 +438,7 @@
   function makeTab(s, isHist) {
     const tab = document.createElement('div');
     tab.className = 'tab' + (s.id === selectedId ? ' active' : '') + (isHist ? ' hist' : '') +
-      (s.owned ? ' owned' : '');
+      (s.owned ? ' owned' : '') + (statusMap[s.id] ? ' busy' : '');
     const changed = seenMtime[s.id] !== undefined && s.mtime > seenMtime[s.id];
     if (changed && s.id !== selectedId) tab.classList.add('haschange');
     tab.innerHTML = '<span class="ping"></span>' +
@@ -482,6 +511,8 @@
 
   async function tick() {
     try {
+      try { statusMap = await (await fetch('/status?t=' + Date.now(), { cache: 'no-store' })).json() || {}; }
+      catch (e) { statusMap = {}; }
       const res = await fetch('sessions.json?t=' + Date.now(), { cache: 'no-store' });
       if (!res.ok) throw new Error(res.status);
       const data = await res.json();
@@ -511,6 +542,7 @@
         sel = { id: selectedId, owned: true, md: null, tokens: 0, out: 0, mtime: 0 };
       }
       setCompose(sel);
+      renderWorking();
       if (sel) {
         seenMtime[sel.id] = sel.mtime;
         elFootTok.textContent = '🔤 ' + fmtTok(sel.tokens) + ' טוקנים · ' + fmtTok(sel.out) + ' out';

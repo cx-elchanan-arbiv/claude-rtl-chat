@@ -55,6 +55,22 @@ _owned_lock = threading.Lock()
 _locks = {}            # id -> Lock (serialize sends per session)
 _locks_guard = threading.Lock()
 
+_status = {}           # id -> {state, started, detail, tokens} live "working" indicator
+_status_lock = threading.Lock()
+
+
+def set_status(sid, **kw):
+    with _status_lock:
+        s = _status.setdefault(sid, {})
+        for k, v in kw.items():
+            if v is not None:
+                s[k] = v
+
+
+def clear_status(sid):
+    with _status_lock:
+        _status.pop(sid, None)
+
 
 def _lock_for(sid):
     with _locks_guard:
@@ -83,23 +99,53 @@ def transcript_exists(sid):
 
 
 def run_claude(sid, text):
-    """Blocking claude -p run; reply is written to the transcript by Claude Code."""
+    """Stream claude -p; reply still lands in the transcript (rendered by the mirror),
+    while stdout stream-json events drive the live 'working' indicator (_status)."""
     cwd = (read_owned().get(sid) or {}).get("cwd") or DEFAULT_CWD
     if not os.path.isdir(cwd):
         cwd = DEFAULT_CWD
     first = not transcript_exists(sid)
     sess = ["--session-id", sid] if first else ["--resume", sid]
-    # --add-dir UPLOADS so Claude's Read tool can open pasted/attached files
-    cmd = [CLAUDE_BIN, "-p", text, *sess, "--add-dir", UPLOADS, *PERM]
+    cmd = [CLAUDE_BIN, "-p", text, *sess, "--add-dir", UPLOADS,
+           "--output-format", "stream-json", "--include-partial-messages", "--verbose", *PERM]
     env = os.environ.copy()
     env["PATH"] = CHILD_PATH
+    set_status(sid, state="thinking", started=time.time(), detail=None, tokens=0)
     try:
-        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
-                           timeout=600, env=env)
-        if r.returncode != 0:
-            print(f"[send {sid[:8]}] rc={r.returncode} {r.stderr[:300]}", flush=True)
+        proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, env=env)
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except Exception:
+                continue
+            if e.get("type") != "stream_event":
+                continue
+            ev = e.get("event") or {}
+            et = ev.get("type")
+            if et == "content_block_start":
+                cb = ev.get("content_block") or {}
+                bt = cb.get("type")
+                if bt == "thinking":
+                    set_status(sid, state="thinking", detail=None)
+                elif bt == "text":
+                    set_status(sid, state="responding", detail=None)
+                elif bt == "tool_use":
+                    set_status(sid, state="tool", detail=cb.get("name"))
+            elif et == "message_delta":
+                u = ev.get("usage") or {}
+                if u.get("output_tokens"):
+                    set_status(sid, tokens=u["output_tokens"])
+        proc.wait(timeout=600)
+        if proc.returncode not in (0, None):
+            print(f"[send {sid[:8]}] rc={proc.returncode}", flush=True)
     except Exception as e:
         print(f"[send {sid[:8]}] error: {e}", flush=True)
+    finally:
+        clear_status(sid)
 
 
 def handle_send(sid, text):
@@ -133,8 +179,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path.split("?")[0] == "/dirs":
+        p = self.path.split("?")[0]
+        if p == "/dirs":
             return self._json(200, {"dirs": list_dirs()})
+        if p == "/status":
+            with _status_lock:
+                return self._json(200, dict(_status))
         return super().do_GET()
 
     def do_POST(self):
