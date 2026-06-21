@@ -66,33 +66,63 @@ def esc(s):
     return html.escape(str(s))
 
 
-def details(summary_html, body, cls="tool"):
+def details(summary_html, body, cls="tool", is_open=False):
     # collapse to ONE physical line (encode newlines) so a blank line inside a
     # diff can't make marked terminate the HTML block early; <pre> + &#10; still
     # renders real line breaks in the browser.
     one = esc(body).replace("\r", "").replace("\n", "&#10;")
-    return (f'\n\n<details class="{cls}"><summary>{summary_html}</summary>'
+    op = " open" if is_open else ""
+    return (f'\n\n<details class="{cls}"{op}><summary>{summary_html}</summary>'
             f'<pre>{one}</pre></details>\n\n')
 
 
+def kv_body(inp):
+    """Readable input dump that KEEPS real newlines (json.dumps escapes them to
+    literal \\n, which renders as garbage). Strings stay raw; dict/list -> indent."""
+    parts = []
+    for k, v in inp.items():
+        if isinstance(v, str):
+            parts.append(f"{k}:\n{v}" if "\n" in v else f"{k}: {v}")
+        else:
+            parts.append(f"{k}: {json.dumps(v, ensure_ascii=False, indent=2)}")
+    return "\n".join(parts)
+
+
 def summarize_tool(name, inp):
-    """Return (summary_html, body_text) for one tool_use."""
+    """Return (summary_html, body_text, is_open, cls) for one tool_use."""
     if name in ("Edit", "NotebookEdit"):
         base = os.path.basename(inp.get("file_path", "") or "")
         body = f'- {inp.get("old_string", "")}\n+ {inp.get("new_string", "")}'
-        return f'🔧 ערך <code>{esc(base)}</code>', body
+        return f'🔧 ערך <code>{esc(base)}</code>', body, False, "tool"
     if name == "Write":
         base = os.path.basename(inp.get("file_path", "") or "")
-        return f'📄 כתב <code>{esc(base)}</code>', inp.get("content", "")
+        return f'📄 כתב <code>{esc(base)}</code>', inp.get("content", ""), False, "tool"
     if name == "Bash":
         cmd = inp.get("command", "")
         desc = inp.get("description", "")
         head = desc or " ".join(cmd.split())[:50]
-        return f'💻 <code>{esc(head)}</code>', cmd
+        return f'💻 <code>{esc(head)}</code>', cmd, False, "tool"
     if name == "Read":
         base = os.path.basename(inp.get("file_path", "") or "")
-        return f'📖 קרא <code>{esc(base)}</code>', json.dumps(inp, ensure_ascii=False, indent=2)
-    return f'🔧 {esc(name)}', json.dumps(inp, ensure_ascii=False, indent=2)
+        return f'📖 קרא <code>{esc(base)}</code>', kv_body(inp), False, "tool"
+    # human-text tools → render readable + expanded (like the terminal)
+    if name == "ExitPlanMode":
+        return '📋 תוכנית', inp.get("plan", ""), True, "tool plan"
+    if name == "AskUserQuestion":
+        lines = []
+        for q in (inp.get("questions") or []):
+            lines.append("❓ " + (q.get("question", "")))
+            for o in (q.get("options") or []):
+                lab, desc = o.get("label", ""), o.get("description", "")
+                lines.append(f"  • {lab}" + (f" — {desc}" if desc else ""))
+            lines.append("")
+        return '❓ שאלה', "\n".join(lines).strip(), True, "tool plan"
+    if name == "TodoWrite":
+        mark = {"completed": "✓", "in_progress": "▸", "pending": "☐"}
+        lines = [f"{mark.get(t.get('status',''), '•')} {t.get('content', t.get('activeForm',''))}"
+                 for t in (inp.get("todos") or [])]
+        return '✓ משימות', "\n".join(lines), False, "tool"
+    return f'🔧 {esc(name)}', kv_body(inp), False, "tool"
 
 
 def result_text(blk):
@@ -110,8 +140,8 @@ def render_assistant(content):
         if blk.get("type") == "text" and blk.get("text"):
             out.append(blk["text"].strip())
         elif blk.get("type") == "tool_use":
-            summ, body = summarize_tool(blk.get("name", ""), blk.get("input", {}) or {})
-            out.append(details(summ, body))
+            summ, body, is_open, cls = summarize_tool(blk.get("name", ""), blk.get("input", {}) or {})
+            out.append(details(summ, body, cls=cls, is_open=is_open))
     return "\n\n".join(p for p in out if p)
 
 

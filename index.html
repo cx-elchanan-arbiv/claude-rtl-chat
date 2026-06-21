@@ -87,6 +87,14 @@
     margin: 0; border: none; border-radius: 0 0 8px 8px;
     max-height: 380px; overflow: auto; font-size: 13px;
   }
+  /* plan / question blocks: accent + RTL wrapping (Hebrew prose, not code) */
+  #content details.plan { border-color: var(--accent); }
+  #content details.plan > summary { color: var(--accent); font-weight: 600; }
+  #content details.plan pre {
+    white-space: pre-wrap; word-break: break-word; direction: rtl; text-align: right;
+    max-height: none; font-size: 14px; line-height: 1.6;
+    font-family: -apple-system, "SF Hebrew", "Arial Hebrew", system-ui, sans-serif;
+  }
   #content a { color: var(--accent); }
   #content code {
     background: var(--code-bg); padding: .15em .4em; border-radius: 5px;
