@@ -146,8 +146,9 @@
     background: var(--accent); color: #1e1e2e; font-weight: 600; font-size: 15px;
   }
   #sendBtn:disabled { opacity: .4; cursor: default; }
-  #composeNote { color: var(--muted); font-size: 13px; padding: 8px 16px;
-    background: var(--code-bg); border-top: 1px solid var(--border); }
+  /* read-only caption — clearly a label, NOT an input row */
+  #composeNote { color: var(--muted); font-size: 13px; text-align: center;
+    padding: 14px 16px 18px; background: transparent; font-style: italic; }
   #dirSel {
     margin-inline-start: 8px; background: var(--bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 7px; padding: 3px 8px; font-size: 13px;
