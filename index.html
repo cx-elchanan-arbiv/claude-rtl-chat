@@ -127,14 +127,18 @@
     background: var(--bg); font-size: 13px; margin-inline-start: 10px;
   }
   #compose {
-    flex: 0 0 auto; display: flex; gap: 8px; align-items: flex-end;
-    padding: 10px 16px; background: var(--code-bg); border-top: 1px solid var(--border);
+    flex: 0 0 auto; background: transparent; padding: 8px 16px 16px;
+  }
+  #composeInner {
+    max-width: 820px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 16px;
+    padding: 8px 10px; box-shadow: 0 2px 14px rgba(0,0,0,.25);
   }
   #compose textarea {
-    flex: 1 1 auto; resize: none; min-height: 24px; max-height: 160px;
-    background: var(--bg); color: var(--fg); border: 1px solid var(--border);
-    border-radius: 10px; padding: 9px 12px; font: inherit; font-size: 15px;
-    direction: rtl; text-align: right;
+    flex: 1 1 auto; resize: none; min-height: 54px; max-height: 220px;
+    background: transparent; color: var(--fg); border: none;
+    padding: 8px 8px; font: inherit; font-size: 16px; line-height: 1.5;
+    direction: rtl; text-align: right; outline: none;
   }
   #compose textarea:disabled { opacity: .5; }
   #sendBtn {
@@ -152,8 +156,8 @@
     cursor: pointer; user-select: none; border: 1px solid var(--border);
     border-radius: 10px; padding: 9px 12px; background: var(--bg); color: var(--fg); font-size: 16px;
   }
-  #chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px; background: var(--code-bg); }
-  #chips:not(:empty) { padding: 8px 16px 0; }
+  #chips { display: flex; flex-wrap: wrap; gap: 6px; max-width: 820px; margin: 0 auto; padding: 0 26px; }
+  #chips:not(:empty) { padding: 8px 26px 0; }
   .chip { background: var(--bg); border: 1px solid var(--border); border-radius: 14px;
     padding: 3px 10px 3px 6px; font-size: 12px; color: var(--fg); display: flex; gap: 6px; align-items: center; }
   .chip b { cursor: pointer; color: var(--muted); }
@@ -196,10 +200,12 @@
   <div id="working"></div>
   <div id="chips"></div>
   <div id="compose">
-    <button id="attachBtn" title="צרף קובץ או תמונה">📎</button>
-    <input type="file" id="fileInput" multiple style="display:none">
-    <textarea id="msg" rows="1" placeholder="כתוב הודעה ל-Claude…  (Enter לשליחה, Shift+Enter שורה חדשה, אפשר להדביק תמונה)"></textarea>
-    <button id="sendBtn">שלח</button>
+    <div id="composeInner">
+      <button id="attachBtn" title="צרף קובץ או תמונה">📎</button>
+      <input type="file" id="fileInput" multiple style="display:none">
+      <textarea id="msg" rows="1" placeholder="כתוב הודעה ל-Claude…  (Enter לשליחה, Shift+Enter שורה חדשה, אפשר להדביק תמונה)"></textarea>
+      <button id="sendBtn">שלח</button>
+    </div>
   </div>
   <div id="composeNote" style="display:none"></div>
   <footer><span id="foot-max"></span><span id="foot-tok"></span></footer>
@@ -403,7 +409,18 @@
   });
   elMsg.addEventListener('input', () => {   // auto-grow
     elMsg.style.height = 'auto';
-    elMsg.style.height = Math.min(elMsg.scrollHeight, 160) + 'px';
+    elMsg.style.height = Math.min(elMsg.scrollHeight, 220) + 'px';
+  });
+  // auto-focus the box: on load, and "just start typing anywhere" jumps to it
+  function focusCompose() {
+    if (elCompose.style.display !== 'none') { try { elMsg.focus(); } catch (e) {} }
+  }
+  document.addEventListener('keydown', (e) => {
+    if (elCompose.style.display === 'none') return;
+    const tag = (document.activeElement && document.activeElement.tagName) || '';
+    if (tag === 'TEXTAREA' || tag === 'INPUT') return;       // already typing somewhere
+    if (e.metaKey || e.ctrlKey || e.altKey) return;          // let shortcuts through
+    if (e.key && e.key.length === 1) elMsg.focus();          // a printable char → focus box
   });
   // paste images/files straight into the chat
   elMsg.addEventListener('paste', (e) => {
@@ -412,9 +429,12 @@
   });
 
   // enable compose only for browser-owned chats; read-only note otherwise
+  let lastComposeOwned = false;
   function setCompose(sel) {
-    const owned = sel && sel.owned;
-    elCompose.style.display = owned ? 'flex' : 'none';
+    const owned = !!(sel && sel.owned);
+    elCompose.style.display = owned ? 'block' : 'none';
+    if (owned && !lastComposeOwned) setTimeout(focusCompose, 0);   // focus when box appears
+    lastComposeOwned = owned;
     if (owned) { elNote.style.display = 'none'; return; }
     elNote.style.display = sel ? 'block' : 'none';
     if (sel) elNote.textContent = '👁️ שיחה זו נפתחה בטרמינל — צפייה בלבד. ל"➕ שיחה חדשה" כדי לכתוב.';
