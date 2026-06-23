@@ -170,16 +170,16 @@
   }
   /* ⌨️ standalone keyboard-layout fixer — fixed bottom-left, independent of any chat */
   #kbfix {
-    position: fixed; left: 14px; bottom: 46px; z-index: 60; width: 270px;
-    background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
-    box-shadow: 0 4px 18px rgba(0,0,0,.4); direction: rtl; overflow: hidden;
+    position: fixed; left: 14px; top: 92px; z-index: 60; width: 270px;
+    background: #15232b; border: 2px solid var(--new); border-radius: 12px;
+    box-shadow: 0 6px 22px rgba(0,0,0,.55); direction: rtl; overflow: hidden;
   }
   #kbfixHead {
     display: flex; justify-content: space-between; align-items: center; cursor: pointer;
-    padding: 8px 12px; background: var(--code-bg); color: var(--fg);
+    padding: 8px 12px; background: rgba(166,227,161,.12); color: var(--new);
     font-weight: 600; font-size: 13px; user-select: none;
   }
-  #kbfixHead #kbfixToggle { color: var(--muted); font-size: 11px; }
+  #kbfixHead #kbfixToggle { color: var(--new); font-size: 11px; }
   #kbfix.collapsed #kbfixBody { display: none; }
   #kbfixBody { padding: 10px; display: flex; flex-direction: column; gap: 8px; }
   #kbfixIn {
@@ -272,6 +272,7 @@
       <div id="kbfixActions">
         <button id="kbfixGo">המר לעברית ←</button>
         <button id="kbfixCopy">📋 העתק</button>
+        <button id="kbfixClear" title="נקה את הקלט והפלט">🗑️</button>
       </div>
     </div>
   </div>
@@ -475,11 +476,46 @@
     } catch (e) { /* ignore */ }
   };
 
+  // ---- compose draft persistence (survives a page refresh, per chat) ----
+  const draftKey = (id) => 'rtl-draft-' + id;
+  function saveDraft() {
+    if (!selectedId) return;
+    if (elMsg.value) localStorage.setItem(draftKey(selectedId), elMsg.value);
+    else localStorage.removeItem(draftKey(selectedId));
+  }
+  let lastDraftChat = null;
+  function loadDraft(id) {
+    if (id === lastDraftChat) return;       // only when the chat actually changes — never clobber typing
+    lastDraftChat = id;
+    elMsg.value = localStorage.getItem(draftKey(id)) || '';
+    elMsg.style.height = 'auto';
+    elMsg.style.height = Math.min(elMsg.scrollHeight, 220) + 'px';
+  }
+
+  // ---- optimistic echo: show the just-sent message instantly (poll catches up in ~1s) ----
+  function removeOptimistic() { const o = document.getElementById('optimistic'); if (o) o.remove(); }
+  function appendOptimistic(text, files) {
+    let body = text || '';
+    if (files && files.length) body += (body ? '\n' : '') + '📎 ' + files.length + ' קבצים';
+    if (!body) return;
+    removeOptimistic();
+    const empty = elContent.querySelector('#empty'); if (empty) empty.remove();
+    const box = document.createElement('div');
+    box.className = 'turn user'; box.id = 'optimistic';
+    const h = document.createElement('h3'); h.textContent = 'אתה 🧑';
+    const p = document.createElement('div'); p.style.whiteSpace = 'pre-wrap'; p.textContent = body;
+    box.appendChild(h); box.appendChild(p);
+    elContent.appendChild(box);
+    elWrap.scrollTop = elWrap.scrollHeight;
+  }
+
   async function sendMsg() {
     const text = elMsg.value.trim();
     const files = pendingFiles.map(f => f.path);
     if ((!text && !files.length) || !selectedId) return;
     elMsg.value = ''; elMsg.style.height = 'auto';
+    localStorage.removeItem(draftKey(selectedId));   // sent → drop the saved draft
+    appendOptimistic(text, files);                   // show it immediately
     pendingFiles = []; renderChips();
     elSend.disabled = true; elSend.textContent = 'שולח…';
     try {
@@ -487,7 +523,7 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: selectedId, text, files })
       });
-    } catch (e) { /* ignore */ }
+    } catch (e) { removeOptimistic(); elMsg.value = text; }   // restore on failure
     setTimeout(() => { elSend.disabled = false; elSend.textContent = 'שלח'; }, 600);
   }
   elSend.onclick = sendMsg;
@@ -515,6 +551,7 @@
     const outEl = document.getElementById('kbfixOut');
     const goEl = document.getElementById('kbfixGo');
     const cpEl = document.getElementById('kbfixCopy');
+    const clrEl = document.getElementById('kbfixClear');
     function render() {
       const v = inEl.value;
       if (!v.trim()) { outEl.textContent = 'הפלט בעברית יופיע כאן'; outEl.classList.add('empty'); return; }
@@ -522,6 +559,7 @@
     }
     inEl.addEventListener('input', render);
     goEl.addEventListener('click', () => { render(); inEl.focus(); });
+    clrEl.addEventListener('click', () => { inEl.value = ''; render(); inEl.focus(); });
     cpEl.addEventListener('click', async () => {
       if (outEl.classList.contains('empty')) return;
       try { await navigator.clipboard.writeText(outEl.textContent); cpEl.textContent = '✓ הועתק'; }
@@ -533,9 +571,10 @@
       tgl.textContent = wrap.classList.contains('collapsed') ? '▲' : '▼';
     });
   })();
-  elMsg.addEventListener('input', () => {   // auto-grow
+  elMsg.addEventListener('input', () => {   // auto-grow + persist draft
     elMsg.style.height = 'auto';
     elMsg.style.height = Math.min(elMsg.scrollHeight, 220) + 'px';
+    saveDraft();
   });
   // auto-focus the box: on load, and "just start typing anywhere" jumps to it
   function focusCompose() {
@@ -563,6 +602,7 @@
       const p = ((window._owned || {})[sel.id] || {}).perm || 'read';
       if (elPermLive.value !== p) elPermLive.value = p;
       tintPerm(elPermLive);
+      loadDraft(sel.id);   // restore this chat's saved draft (only when the chat changes)
     }
     if (owned && !lastComposeOwned) setTimeout(focusCompose, 0);   // focus when box appears
     lastComposeOwned = owned;
