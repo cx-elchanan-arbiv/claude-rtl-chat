@@ -157,6 +157,40 @@
     cursor: pointer; user-select: none; border: 1px solid var(--border);
     border-radius: 10px; padding: 9px 12px; background: var(--bg); color: var(--fg); font-size: 16px;
   }
+  /* ⌨️ standalone keyboard-layout fixer — fixed bottom-left, independent of any chat */
+  #kbfix {
+    position: fixed; left: 14px; bottom: 46px; z-index: 60; width: 270px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 4px 18px rgba(0,0,0,.4); direction: rtl; overflow: hidden;
+  }
+  #kbfixHead {
+    display: flex; justify-content: space-between; align-items: center; cursor: pointer;
+    padding: 8px 12px; background: var(--code-bg); color: var(--fg);
+    font-weight: 600; font-size: 13px; user-select: none;
+  }
+  #kbfixHead #kbfixToggle { color: var(--muted); font-size: 11px; }
+  #kbfix.collapsed #kbfixBody { display: none; }
+  #kbfixBody { padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  #kbfixIn {
+    width: 100%; box-sizing: border-box; resize: vertical; min-height: 58px;
+    background: var(--code-bg); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 8px; font: inherit; font-size: 14px;
+    direction: ltr; text-align: left; outline: none;
+  }
+  #kbfixOut {
+    min-height: 40px; background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 8px; color: var(--fg); font-size: 15px;
+    white-space: pre-wrap; word-break: break-word; direction: rtl; text-align: right;
+  }
+  #kbfixOut.empty { color: var(--muted); font-style: italic; }
+  #kbfixActions { display: flex; gap: 8px; }
+  #kbfix button {
+    cursor: pointer; border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 12px; background: var(--bg); color: var(--fg);
+    font-size: 13px; font-weight: 600;
+  }
+  #kbfix button:hover { border-color: var(--accent); }
+  #kbfixGo { background: var(--accent); color: #1e1e2e; border-color: var(--accent); flex: 1; }
   #chips { display: flex; flex-wrap: wrap; gap: 6px; max-width: 820px; margin: 0 auto; padding: 0 26px; }
   #chips:not(:empty) { padding: 8px 26px 0; }
   .chip { background: var(--bg); border: 1px solid var(--border); border-radius: 14px;
@@ -209,6 +243,17 @@
     </div>
   </div>
   <div id="composeNote" style="display:none"></div>
+  <div id="kbfix">
+    <div id="kbfixHead">⌨️ תיקון עברית <span id="kbfixToggle">▼</span></div>
+    <div id="kbfixBody">
+      <textarea id="kbfixIn" rows="3" placeholder="הדבק כאן טקסט שיצא באנגלית בטעות…"></textarea>
+      <div id="kbfixOut" class="empty">הפלט בעברית יופיע כאן</div>
+      <div id="kbfixActions">
+        <button id="kbfixGo">המר לעברית ←</button>
+        <button id="kbfixCopy">📋 העתק</button>
+      </div>
+    </div>
+  </div>
   <footer><span id="foot-max"></span><span id="foot-tok"></span></footer>
 <script>
   if (window.marked) marked.setOptions({ breaks: true, gfm: true });
@@ -408,6 +453,45 @@
   elMsg.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
   });
+
+  // ⌨️ תיקון פריסת-מקלדת — המרה דטרמיניסטית 1:1 לפי המקש הפיזי במקלדת העברית הסטנדרטית (אופליין, בלי API)
+  const KB_EN2HE = {
+    q:'/', w:"'", e:'ק', r:'ר', t:'א', y:'ט', u:'ו', i:'ן', o:'ם', p:'פ',
+    a:'ש', s:'ד', d:'ג', f:'כ', g:'ע', h:'י', j:'ח', k:'ל', l:'ך',
+    z:'ז', x:'ס', c:'ב', v:'ה', b:'נ', n:'מ', m:'צ',
+    ';':'ף', "'":',', ',':'ת', '.':'ץ', '/':'.'
+  };
+  function convertKbLayout(s) {
+    return s.replace(/[A-Za-z;',.\/]/g, ch => KB_EN2HE[ch.toLowerCase()] || ch);
+  }
+
+  // standalone widget (bottom-left) — always visible regardless of the open chat
+  (function () {
+    const wrap = document.getElementById('kbfix');
+    const head = document.getElementById('kbfixHead');
+    const tgl  = document.getElementById('kbfixToggle');
+    const inEl = document.getElementById('kbfixIn');
+    const outEl = document.getElementById('kbfixOut');
+    const goEl = document.getElementById('kbfixGo');
+    const cpEl = document.getElementById('kbfixCopy');
+    function render() {
+      const v = inEl.value;
+      if (!v.trim()) { outEl.textContent = 'הפלט בעברית יופיע כאן'; outEl.classList.add('empty'); return; }
+      outEl.textContent = convertKbLayout(v); outEl.classList.remove('empty');
+    }
+    inEl.addEventListener('input', render);
+    goEl.addEventListener('click', () => { render(); inEl.focus(); });
+    cpEl.addEventListener('click', async () => {
+      if (outEl.classList.contains('empty')) return;
+      try { await navigator.clipboard.writeText(outEl.textContent); cpEl.textContent = '✓ הועתק'; }
+      catch (e) { cpEl.textContent = '✗ שגיאה'; }
+      setTimeout(() => { cpEl.textContent = '📋 העתק'; }, 1200);
+    });
+    head.addEventListener('click', () => {
+      wrap.classList.toggle('collapsed');
+      tgl.textContent = wrap.classList.contains('collapsed') ? '▲' : '▼';
+    });
+  })();
   elMsg.addEventListener('input', () => {   // auto-grow
     elMsg.style.height = 'auto';
     elMsg.style.height = Math.min(elMsg.scrollHeight, 220) + 'px';
