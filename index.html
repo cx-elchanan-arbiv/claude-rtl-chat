@@ -153,6 +153,17 @@
     margin-inline-start: 8px; background: var(--bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 7px; padding: 3px 8px; font-size: 13px;
   }
+  /* permission-level pickers (header = new-chat default, compose = live for current chat) */
+  #permSel {
+    margin-inline-start: 6px; background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 7px; padding: 3px 8px; font-size: 13px;
+  }
+  #permLive {
+    align-self: center; background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 8px; font-size: 13px;
+    cursor: pointer;
+  }
+  #permLive.full, #permSel.full { border-color: #f38ba8; color: #f38ba8; font-weight: 600; }
   #attachBtn {
     cursor: pointer; user-select: none; border: 1px solid var(--border);
     border-radius: 10px; padding: 9px 12px; background: var(--bg); color: var(--fg); font-size: 16px;
@@ -227,6 +238,11 @@
       <span id="dot"></span><span id="status">מתחבר…</span>
       <span id="newBtn">➕ שיחה חדשה</span>
       <select id="dirSel" title="באיזו תיקייה תרוץ השיחה החדשה"></select>
+      <select id="permSel" title="רמת-הרשאה לשיחה החדשה">
+        <option value="read">🔒 קריאה</option>
+        <option value="edit">✏️ עריכות</option>
+        <option value="full">⚡ כוח מלא</option>
+      </select>
       <span id="histBtn" style="display:none"></span>
     </div>
     <div id="tabs"></div>
@@ -236,6 +252,11 @@
   <div id="chips"></div>
   <div id="compose">
     <div id="composeInner">
+      <select id="permLive" title="רמת-הרשאה לשיחה הנוכחית — משפיעה על ההודעה הבאה">
+        <option value="read">🔒 קריאה</option>
+        <option value="edit">✏️ עריכות</option>
+        <option value="full">⚡ כוח מלא</option>
+      </select>
       <button id="attachBtn" title="צרף קובץ או תמונה">📎</button>
       <input type="file" id="fileInput" multiple style="display:none">
       <textarea id="msg" rows="1" placeholder="כתוב הודעה ל-Claude…  (Enter לשליחה, Shift+Enter שורה חדשה, אפשר להדביק תמונה)"></textarea>
@@ -271,6 +292,8 @@
   const elNote = document.getElementById('composeNote');
   const elCompose = document.getElementById('compose');
   const elDirSel = document.getElementById('dirSel');
+  const elPermSel = document.getElementById('permSel');
+  const elPermLive = document.getElementById('permLive');
   const elAttach = document.getElementById('attachBtn');
   const elFile = document.getElementById('fileInput');
   const elChips = document.getElementById('chips');
@@ -316,6 +339,24 @@
     } catch (e) { /* ignore */ }
   })();
   elDirSel.onchange = () => localStorage.setItem('rtl-dir', elDirSel.value);
+
+  // permission pickers — remember the new-chat default; tint red on "full"
+  const savedPerm = localStorage.getItem('rtl-perm');
+  if (savedPerm) elPermSel.value = savedPerm;
+  function tintPerm(sel) { sel.classList.toggle('full', sel.value === 'full'); }
+  tintPerm(elPermSel);
+  elPermSel.onchange = () => { localStorage.setItem('rtl-perm', elPermSel.value); tintPerm(elPermSel); };
+  // live switch for the CURRENT chat — takes effect on the next message
+  elPermLive.onchange = async () => {
+    tintPerm(elPermLive);
+    if (!selectedId) return;
+    try {
+      await fetch('/perm', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: selectedId, perm: elPermLive.value })
+      });
+    } catch (e) { /* ignore — next tick re-syncs from owned.json */ }
+  };
 
   function renderChips() {
     elChips.innerHTML = pendingFiles.map((f, i) =>
@@ -418,7 +459,7 @@
     try {
       const res = await fetch('/new', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cwd: elDirSel.value || undefined })
+        body: JSON.stringify({ cwd: elDirSel.value || undefined, perm: elPermSel.value })
       });
       const d = await res.json();
       if (d.id) {
@@ -518,6 +559,11 @@
   function setCompose(sel) {
     const owned = !!(sel && sel.owned);
     elCompose.style.display = owned ? 'block' : 'none';
+    if (owned) {   // reflect this chat's stored permission level into the live picker
+      const p = ((window._owned || {})[sel.id] || {}).perm || 'read';
+      if (elPermLive.value !== p) elPermLive.value = p;
+      tintPerm(elPermLive);
+    }
     if (owned && !lastComposeOwned) setTimeout(focusCompose, 0);   // focus when box appears
     lastComposeOwned = owned;
     if (owned) { elNote.style.display = 'none'; return; }
@@ -638,6 +684,8 @@
     try {
       try { statusMap = await (await fetch('/status?t=' + Date.now(), { cache: 'no-store' })).json() || {}; }
       catch (e) { statusMap = {}; }
+      try { window._owned = await (await fetch('owned.json?t=' + Date.now(), { cache: 'no-store' })).json() || {}; }
+      catch (e) { window._owned = window._owned || {}; }
       const res = await fetch('sessions.json?t=' + Date.now(), { cache: 'no-store' });
       if (!res.ok) throw new Error(res.status);
       const data = await res.json();

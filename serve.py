@@ -42,10 +42,19 @@ PROJECTS_PARENT = os.path.expanduser("~/Projects")   # offered in the dir picker
 UPLOADS = os.path.join(BASE, "uploads")              # pasted/attached files land here
 os.makedirs(UPLOADS, exist_ok=True)
 
-# Permission level for browser-run Claude. SAFE default: read/plan/answer only.
-# Full power: replace with ["--permission-mode", "acceptEdits"] or
-# ["--dangerously-skip-permissions"].
-PERM = ["--allowedTools", "Read", "Grep", "Glob", "WebFetch", "WebSearch", "TodoWrite"]
+# Permission levels for browser-run Claude, chosen per-session (stored in owned.json).
+# Headless `claude -p` can't prompt, so each level is a fixed set of pre-auth flags
+# (forms per the official Claude Code docs: headless / permission-modes / permissions).
+#   read = SAFE default: read/search/web only (allowedTools whitelist, comma-separated)
+#   edit = auto-accept file edits + common fs commands (acceptEdits) — no arbitrary Bash
+#   full = skip all prompts incl. Bash (bypassPermissions — the documented official flag)
+# Gotcha: in -p mode a tool that isn't pre-authed ABORTS the turn (no silent deny / no prompt).
+PERM_MODES = {
+    "read": ["--allowedTools", "Read,Grep,Glob,WebFetch,WebSearch,TodoWrite"],
+    "edit": ["--permission-mode", "acceptEdits"],
+    "full": ["--permission-mode", "bypassPermissions"],
+}
+DEFAULT_PERM = "read"
 
 os.chdir(BASE)
 sys.path.insert(0, BASE)
@@ -133,15 +142,17 @@ def transcript_exists(sid):
 def run_claude(sid, text):
     """Stream claude -p; reply still lands in the transcript (rendered by the mirror),
     while stdout stream-json events drive the live 'working' indicator (_status)."""
-    cwd = (read_owned().get(sid) or {}).get("cwd") or DEFAULT_CWD
+    owned = read_owned().get(sid) or {}
+    cwd = owned.get("cwd") or DEFAULT_CWD
     if not os.path.isdir(cwd):
         cwd = DEFAULT_CWD
+    perm_flags = PERM_MODES.get(owned.get("perm"), PERM_MODES[DEFAULT_PERM])
     first = not transcript_exists(sid)
     if not first:
         heal_transcript(sid)   # safety net: a prior /stop may have left a half-written line
     sess = ["--session-id", sid] if first else ["--resume", sid]
     cmd = [CLAUDE_BIN, "-p", text, *sess, "--add-dir", UPLOADS,
-           "--output-format", "stream-json", "--include-partial-messages", "--verbose", *PERM]
+           "--output-format", "stream-json", "--include-partial-messages", "--verbose", *perm_flags]
     env = os.environ.copy()
     env["PATH"] = CHILD_PATH
     set_status(sid, state="thinking", started=time.time(), detail=None, tokens=0)
@@ -237,15 +248,31 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             cwd = body.get("cwd") or DEFAULT_CWD
             if not os.path.isdir(cwd):
                 cwd = DEFAULT_CWD
+            perm = body.get("perm")
+            if perm not in PERM_MODES:
+                perm = DEFAULT_PERM
             with _owned_lock:
                 d = read_owned()
-                d[sid] = {"created": int(time.time()), "title": "שיחה חדשה", "cwd": cwd}
+                d[sid] = {"created": int(time.time()), "title": "שיחה חדשה", "cwd": cwd, "perm": perm}
                 write_owned(d)
             try:
                 extract.main()   # surface the placeholder immediately (no 1s wait)
             except Exception:
                 pass
-            return self._json(200, {"id": sid, "cwd": cwd})
+            return self._json(200, {"id": sid, "cwd": cwd, "perm": perm})
+
+        if self.path == "/perm":                  # switch a chat's permission level mid-conversation
+            sid = body.get("id")
+            perm = body.get("perm")
+            if perm not in PERM_MODES:
+                return self._json(400, {"error": "bad perm"})
+            with _owned_lock:
+                d = read_owned()
+                if sid not in d:                  # only browser-owned chats are switchable
+                    return self._json(403, {"error": "not an owned session"})
+                d[sid]["perm"] = perm
+                write_owned(d)
+            return self._json(200, {"status": "ok", "perm": perm})
 
         if self.path == "/upload":
             name = os.path.basename(body.get("name") or "file")
