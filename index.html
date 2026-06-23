@@ -366,6 +366,11 @@
     elChips.querySelectorAll('b').forEach(b => b.onclick = () => {
       pendingFiles.splice(+b.dataset.i, 1); renderChips();
     });
+    updateSendState();
+  }
+  // "שלח" is clickable only when there's something to send (text or attachment)
+  function updateSendState() {
+    elSend.disabled = !((elMsg.value.trim() || pendingFiles.length) && selectedId);
   }
   async function uploadFile(file) {
     const data = await new Promise(res => {
@@ -524,7 +529,7 @@
         body: JSON.stringify({ id: selectedId, text, files })
       });
     } catch (e) { removeOptimistic(); elMsg.value = text; }   // restore on failure
-    setTimeout(() => { elSend.disabled = false; elSend.textContent = 'שלח'; }, 600);
+    setTimeout(() => { elSend.textContent = 'שלח'; updateSendState(); }, 600);
   }
   elSend.onclick = sendMsg;
   elMsg.addEventListener('keydown', (e) => {
@@ -575,6 +580,7 @@
     elMsg.style.height = 'auto';
     elMsg.style.height = Math.min(elMsg.scrollHeight, 220) + 'px';
     saveDraft();
+    updateSendState();
   });
   // auto-focus the box: on load, and "just start typing anywhere" jumps to it
   function focusCompose() {
@@ -604,6 +610,7 @@
       tintPerm(elPermLive);
       loadDraft(sel.id);   // restore this chat's saved draft (only when the chat changes)
     }
+    updateSendState();
     if (owned && !lastComposeOwned) setTimeout(focusCompose, 0);   // focus when box appears
     lastComposeOwned = owned;
     if (owned) { elNote.style.display = 'none'; return; }
