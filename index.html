@@ -302,9 +302,35 @@
   const elWorking = document.getElementById('working');
   let statusMap = {};      // id -> {state, started, detail, tokens} live indicator
 
+  // raw tool name (e.g. "Bash", "mcp__playwright__browser_evaluate") → readable Hebrew
+  function friendlyTool(detail) {
+    if (!detail) return 'כלי';
+    const map = {
+      Bash: 'מריץ פקודה', Read: 'קורא קובץ', Edit: 'עורך קובץ', Write: 'כותב קובץ',
+      MultiEdit: 'עורך קובץ', Glob: 'מחפש קבצים', Grep: 'מחפש בקוד', LS: 'רושם תיקייה',
+      WebFetch: 'טוען דף אינטרנט', WebSearch: 'מחפש באינטרנט', TodoWrite: 'מעדכן מטלות',
+      Task: 'מריץ סוכן', NotebookEdit: 'עורך מחברת',
+    };
+    if (map[detail]) return map[detail];
+    const m = detail.match(/^mcp__([a-z0-9_-]+?)__(.+)$/i);   // mcp__server__tool
+    if (m) {
+      const server = m[1], tool = m[2];
+      if (server === 'playwright') {
+        const pw = {
+          browser_navigate: 'ניווט', browser_evaluate: 'מריץ קוד', browser_click: 'לחיצה',
+          browser_type: 'הקלדה', browser_fill_form: 'ממלא טופס', browser_snapshot: 'קורא מבנה-דף',
+          browser_take_screenshot: 'צילום-מסך', browser_wait_for: 'ממתין', browser_navigate_back: 'חזרה',
+          browser_press_key: 'מקש', browser_select_option: 'בחירה', browser_file_upload: 'העלאת קובץ',
+        };
+        return 'דפדפן · ' + (pw[tool] || tool.replace(/^browser_/, '').replace(/_/g, ' '));
+      }
+      return server + ' · ' + tool.replace(/_/g, ' ');
+    }
+    return detail;
+  }
   function workLabel(st) {
     const s = st.state;
-    if (s === 'tool') return '🔧 מריץ: ' + (st.detail || 'כלי');
+    if (s === 'tool') return '🔧 ' + friendlyTool(st.detail);
     if (s === 'responding') return '✍️ כותב';
     if (s === 'thinking') return '🤔 חושב';
     return '⏳ עובד';
@@ -317,7 +343,8 @@
     let txt = workLabel(st) + ' · ' + t;
     if (st.tokens) txt += ' · ' + fmtTok(st.tokens) + ' טוקנים';
     elWorking.className = 'on';
-    elWorking.innerHTML = '<span class="pdot"></span><span>' + esc(txt) + '</span>' +
+    // bdi + dir=rtl isolates any residual latin (unknown tool names) so the line never scrambles
+    elWorking.innerHTML = '<span class="pdot"></span><bdi dir="rtl">' + esc(txt) + '</bdi>' +
       '<button id="stopBtn" title="עצור (כמו ESC) — אפשר אז לתקן/להוסיף">⏹ עצור</button>';
     const sb = document.getElementById('stopBtn');
     if (sb) sb.onclick = async () => {
