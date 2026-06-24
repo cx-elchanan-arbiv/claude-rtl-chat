@@ -467,12 +467,17 @@
     }
   }
 
-  let selectedId = localStorage.getItem('rtl-selected') || null;
+  // Prefer an explicit ?id= from the URL (e.g. a chat opened by another local app
+  // like SubsTranslator) so it lands on that exact owned session — not the last one.
+  const _urlId = new URLSearchParams(location.search).get('id');
+  let selectedId = _urlId || localStorage.getItem('rtl-selected') || null;
+  if (_urlId) localStorage.setItem('rtl-selected', _urlId);
   let showHistory = localStorage.getItem('rtl-hist') === '1';
   let seenMtime = {};
   let lastMd = null;          // currently rendered markdown (change detection)
   let lastSelected = null;
-  let pendingId = null;       // a just-created chat that may not be in sessions.json yet
+  let pendingId = _urlId || null;       // a just-created chat that may not be in sessions.json yet
+                                        // (URL-opened chat counts as pending so compose shows at once)
 
   // vertical mouse-wheel scrolls the tab strip sideways (trackpad h-scroll still native)
   elTabs.addEventListener('wheel', (e) => {
