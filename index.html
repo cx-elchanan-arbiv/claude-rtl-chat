@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Claude · RTL Chat (V2)</title>
+<link id="favicon" rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231e1e2e'/%3E%3Ccircle cx='16' cy='16' r='9' fill='%2389b4fa'/%3E%3C/svg%3E">
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
   :root {
@@ -28,6 +29,10 @@
   }
   #dot { width: 9px; height: 9px; border-radius: 50%; background: #f38ba8; transition: background .3s; }
   #dot.live { background: var(--new); }
+  /* always-visible work-state pill — answers "is it working or done?" at a glance */
+  #workState { font-weight: 600; padding: 2px 11px; border-radius: 12px; font-size: 12.5px; white-space: nowrap; }
+  #workState.work { color: #f9e2af; background: rgba(249,226,175,.14); }
+  #workState.ready { color: var(--new); background: rgba(166,227,161,.13); }
   #histBtn {
     margin-inline-start: auto; cursor: pointer; user-select: none;
     border: 1px solid var(--border); border-radius: 7px; padding: 3px 10px;
@@ -36,8 +41,29 @@
   #histBtn.on { color: var(--fg); border-color: var(--accent); }
   #tabs { display: flex; gap: 6px; overflow-x: auto; padding: 8px 16px 0;
     overscroll-behavior-x: contain; scroll-behavior: smooth;
-    scrollbar-width: none; }                 /* hide strip scrollbar (wheel/trackpad still scroll) */
-  #tabs::-webkit-scrollbar { display: none; }
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  /* slim, always-there strip scrollbar so horizontal scrolling is discoverable */
+  #tabs::-webkit-scrollbar { height: 7px; }
+  #tabs::-webkit-scrollbar-track { background: transparent; }
+  #tabs::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+  #tabs::-webkit-scrollbar-thumb:hover { background: #45475a; }
+  /* ‹ › arrows to scroll the tab strip with a click — shown only when it overflows */
+  #tabStrip { position: relative; }
+  /* subtle edge chevrons: a soft fade of the header bg with a small muted arrow,
+     like a normal scrollable tab bar — brightens on hover */
+  .tabArrow {
+    position: absolute; top: 8px; bottom: 0; width: 38px; z-index: 5;
+    display: none; align-items: center; border: none; cursor: pointer;
+    color: var(--muted); font-size: 17px; line-height: 1; padding: 0 4px;
+    transition: color .12s;
+  }
+  #tabArrowL { left: 0;  justify-content: flex-start;
+    background: linear-gradient(to right, var(--code-bg) 38%, transparent); }
+  #tabArrowR { right: 0; justify-content: flex-end;
+    background: linear-gradient(to left, var(--code-bg) 38%, transparent); }
+  .tabArrow:hover { color: var(--fg); }
+  #tabStrip.canL #tabArrowL { display: flex; }
+  #tabStrip.canR #tabArrowR { display: flex; }
   .tab, #histBtn, #content details.tool > summary, #content a { cursor: pointer; }
   .tab {
     flex: 0 0 auto; cursor: pointer; user-select: none;
@@ -55,7 +81,14 @@
     width: 7px; height: 7px; border-radius: 50%; background: var(--new); }
   .tab.haschange .ping { display: block; }
   /* the ONLY scrolling region */
-  #wrap { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; direction: ltr; }
+  #wrap { flex: 1 1 auto; overflow-y: scroll; overscroll-behavior: contain; direction: ltr;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  /* always-visible scrollbar (macOS hides overlay bars until you scroll) */
+  #wrap::-webkit-scrollbar { width: 11px; }
+  #wrap::-webkit-scrollbar-track { background: transparent; }
+  #wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 7px;
+    border: 2px solid var(--bg); }
+  #wrap::-webkit-scrollbar-thumb:hover { background: #45475a; }
   #content { max-width: 860px; margin: 0 auto; padding: 22px 28px 90px; direction: rtl; text-align: right; }
   #content h3 { line-height: 1.4; margin: 1.4em 0 .3em; color: var(--accent); font-size: 1em; }
   /* per-turn separation: your messages get a warm tinted box, Claude's stay as-is */
@@ -83,6 +116,9 @@
   #content details.tool summary code { color: var(--accent); direction: ltr; unicode-bidi: embed; }
   #content details.tool.result > summary code,
   #content details.tool.result > summary { color: #7f849c; }
+  /* "Claude finished with no text" — a calm note, not a failed-looking reply */
+  #content .noreply { color: var(--muted); font-style: italic; font-size: 13px;
+    opacity: .8; padding: 2px 0; }
   #content details.tool pre {
     margin: 0; border: none; border-radius: 0 0 8px 8px;
     max-height: 380px; overflow: auto; font-size: 13px;
@@ -149,6 +185,12 @@
   /* read-only caption — clearly a label, NOT an input row */
   #composeNote { color: var(--muted); font-size: 13px; text-align: center;
     padding: 14px 16px 18px; background: transparent; font-style: italic; }
+  #composeNote #adoptBtn {
+    margin-inline-start: 8px; cursor: pointer; border: 1px solid var(--accent);
+    color: var(--accent); background: var(--bg); border-radius: 8px;
+    padding: 5px 12px; font-size: 13px; font-weight: 600; font-style: normal;
+  }
+  #composeNote #adoptBtn:hover { background: var(--accent); color: #1e1e2e; }
   #dirSel {
     margin-inline-start: 8px; background: var(--bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 7px; padding: 3px 8px; font-size: 13px;
@@ -164,13 +206,93 @@
     cursor: pointer;
   }
   #permLive.full, #permSel.full { border-color: #f38ba8; color: #f38ba8; font-weight: 600; }
-  #attachBtn {
+  #attachBtn, #kbfixInline {
     cursor: pointer; user-select: none; border: 1px solid var(--border);
     border-radius: 10px; padding: 9px 12px; background: var(--bg); color: var(--fg); font-size: 16px;
   }
-  /* ⌨️ standalone keyboard-layout fixer — fixed bottom-left, independent of any chat */
+  #kbfixInline { font-size: 14px; white-space: nowrap; }
+  #kbfixInline.flash { border-color: #4ade80; color: #4ade80; }
+  /* ── left rail: stacks the daily-tasks widget above the keyboard-fixer ── */
+  #leftRail {
+    position: fixed; left: 14px; top: var(--rail-top, 104px); z-index: 60; width: 282px;
+    display: flex; flex-direction: column; gap: 12px;
+    max-height: calc(100vh - var(--rail-top, 104px) - 18px); overflow-y: auto; overscroll-behavior: contain;
+    scrollbar-width: none;
+  }
+  #leftRail::-webkit-scrollbar { display: none; }
+
+  /* 📝 daily tasks / sticky-notes widget */
+  #notes {
+    flex: 0 0 auto; background: #292621; border: 2px solid #f9e2af; border-radius: 12px;
+    box-shadow: 0 6px 22px rgba(0,0,0,.55); direction: rtl; overflow: hidden;
+  }
+  #notesHead {
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    cursor: pointer; padding: 9px 12px; background: rgba(249,226,175,.12);
+    color: #f9e2af; font-weight: 700; font-size: 13.5px; user-select: none;
+  }
+  #notesTitle { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #notesToggle { color: #f9e2af; font-size: 11px; flex: 0 0 auto; }
+  /* peek: visible only when collapsed; body: visible only when expanded */
+  #notes:not(.collapsed) #notesPeek { display: none; }
+  #notes.collapsed #notesBody { display: none; }
+  #notesPeek { padding: 7px 11px 11px; display: flex; flex-direction: column; gap: 6px; }
+  .peekItem { display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--fg);
+    white-space: nowrap; overflow: hidden; }
+  .peekItem .ptxt { overflow: hidden; text-overflow: ellipsis; }
+  .peekMore { color: var(--muted); font-size: 12px; }
+  .notesEmpty { color: var(--muted); font-style: italic; font-size: 13px; padding: 2px 0; }
+  #notesBody { padding: 9px 11px 13px; display: flex; flex-direction: column; gap: 11px; }
+  #notesAdd { display: flex; gap: 6px; }
+  #notesInput {
+    flex: 1 1 auto; background: var(--code-bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px;
+    font: inherit; font-size: 14px; direction: rtl; text-align: right; outline: none;
+  }
+  #notesInput:focus { border-color: #f9e2af; }
+  #notesAddBtn {
+    cursor: pointer; border: none; border-radius: 8px; padding: 0 14px;
+    background: #f9e2af; color: #292621; font-weight: 700; font-size: 19px; line-height: 1;
+  }
+  #notesList { list-style: none; margin: 0; padding: 0;
+    display: flex; flex-direction: column; gap: 6px; max-height: 40vh; overflow-y: auto; }
+  .taskItem { display: flex; align-items: flex-start; gap: 9px; padding: 7px 9px;
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 9px;
+    transition: opacity .2s; }
+  .cb { flex: 0 0 auto; width: 18px; height: 18px; margin-top: 1px; border-radius: 50%;
+    border: 2px solid var(--muted); cursor: pointer; transition: all .15s; position: relative; }
+  .cb:hover { border-color: var(--new); background: rgba(166,227,161,.22); }
+  .taskItem.done { opacity: .45; }
+  .taskItem.done .cb { background: var(--new); border-color: var(--new); }
+  .taskItem.done .taskTxt { text-decoration: line-through; }
+  .taskTxt { flex: 1 1 auto; font-size: 14px; line-height: 1.45; word-break: break-word; }
+  .taskMeta { display: block; color: var(--muted); font-size: 11.5px; margin-top: 3px; }
+  .taskDel { flex: 0 0 auto; cursor: pointer; color: var(--muted); font-size: 13px; opacity: .55; }
+  .taskDel:hover { color: #f38ba8; opacity: 1; }
+  #notesDoneBar { border-top: 1px dashed var(--border); padding-top: 9px; }
+  #notesDoneToggle {
+    width: 100%; cursor: pointer; border: 1px solid var(--border); border-radius: 8px;
+    padding: 7px; background: var(--bg); color: var(--new); font-size: 13px;
+    font-weight: 600; text-align: center;
+  }
+  #notesDoneToggle:hover { border-color: var(--new); }
+  #notesDone { display: flex; flex-direction: column; gap: 7px; margin-top: 8px;
+    max-height: 34vh; overflow-y: auto; }
+  #notesDone.hidden { display: none; }
+  .doneItem { background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 9px; padding: 8px 10px; }
+  .doneItem .t { font-size: 13.5px; color: var(--muted); text-decoration: line-through; }
+  .doneItem .dates { display: flex; flex-direction: column; gap: 1px;
+    font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .doneItem .note { font-size: 12.5px; color: var(--fg); margin-top: 5px; padding: 4px 8px;
+    background: rgba(249,226,175,.08); border-right: 2px solid #f9e2af; border-radius: 5px; }
+  .doneItem .restore { cursor: pointer; color: var(--accent); font-size: 11.5px;
+    margin-top: 5px; display: inline-block; }
+  .doneItem .restore:hover { text-decoration: underline; }
+
+  /* ⌨️ keyboard-layout fixer — now docked inside the left rail, under the tasks */
   #kbfix {
-    position: fixed; left: 14px; top: 92px; z-index: 60; width: 270px;
+    width: 100%;
     background: #15232b; border: 2px solid var(--new); border-radius: 12px;
     box-shadow: 0 6px 22px rgba(0,0,0,.55); direction: rtl; overflow: hidden;
   }
@@ -218,12 +340,49 @@
     padding: 8px 16px; font-size: 14px; color: var(--accent);
     background: var(--code-bg); border-top: 1px solid var(--border); }
   #working.on { display: flex; }
+  #working.done { color: var(--new); }
+  #working.done .pdot { background: var(--new); animation: none; }
+  /* floating "jump to latest" button — shown only when scrolled up */
+  #toBottom {
+    position: fixed; bottom: 100px; right: 26px;
+    display: none; z-index: 40; cursor: pointer; border: 1px solid var(--border);
+    width: 40px; height: 40px; border-radius: 50%;
+    background: var(--bg); color: var(--fg); font-size: 19px; line-height: 1;
+    box-shadow: 0 4px 16px rgba(0,0,0,.5);
+  }
+  #toBottom.show { display: flex; align-items: center; justify-content: center; }
+  #toBottom:hover { border-color: var(--accent); color: var(--accent); }
+  /* live-streaming reply: a blinking caret after the in-progress text */
+  #streaming .caret {
+    display: inline-block; width: 7px; height: 15px; vertical-align: text-bottom;
+    margin-inline-start: 2px; background: var(--accent); animation: blink 1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  /* per-tab "finished" indicator (green ✓), shown until you open the tab */
+  .tab .donecheck { display: none; position: absolute; top: 4px; inset-inline-start: 6px;
+    color: var(--new); font-size: 12px; font-weight: 700; line-height: 1; }
+  .tab.finished .donecheck { display: block; }
+  .tab.finished .ping { display: none; }
+  .tab.finished { border-color: var(--new); }
+  .tab.finished .name { color: var(--new); }
   #working .pdot { width: 9px; height: 9px; border-radius: 50%;
     background: var(--accent); animation: pulse 1.1s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .25; transform: scale(.7); } }
   #stopBtn { margin-inline-start: auto; cursor: pointer; border: 1px solid #f38ba8;
     color: #f38ba8; background: transparent; border-radius: 8px; padding: 4px 12px; font-size: 13px; }
   #stopBtn:hover { background: #f38ba8; color: #1e1e2e; }
+  /* crashed-reply (interrupted) block: the streamed text that never reached the transcript */
+  #content .turn.interrupted {
+    border: 1px dashed #f9a13f; border-radius: 12px; padding: 2px 18px 12px;
+    background: rgba(249,161,63,.06);
+  }
+  #content .turn.interrupted .intbadge { color: #f9a13f; font-size: 12.5px; font-weight: 600; }
+  #content .turn.interrupted .intactions { margin-top: 8px; }
+  #content .turn.interrupted .intDismiss {
+    cursor: pointer; border: 1px solid var(--border); color: var(--muted);
+    background: transparent; border-radius: 8px; padding: 3px 12px; font-size: 12.5px;
+  }
+  #content .turn.interrupted .intDismiss:hover { border-color: #f9a13f; color: #f9a13f; }
   body.drag::after {
     content: '⬇︎ שחרר כדי לצרף לשיחה'; position: fixed; inset: 0; z-index: 50;
     display: flex; align-items: center; justify-content: center; font-size: 22px;
@@ -236,6 +395,7 @@
   <header>
     <div id="bar">
       <span id="dot"></span><span id="status">מתחבר…</span>
+      <span id="workState" class="ready">🟢 מוכן</span>
       <span id="newBtn">➕ שיחה חדשה</span>
       <select id="dirSel" title="באיזו תיקייה תרוץ השיחה החדשה"></select>
       <select id="permSel" title="רמת-הרשאה לשיחה החדשה">
@@ -245,9 +405,14 @@
       </select>
       <span id="histBtn" style="display:none"></span>
     </div>
-    <div id="tabs"></div>
+    <div id="tabStrip">
+      <button id="tabArrowL" class="tabArrow" title="טאבים ישנים יותר">‹</button>
+      <div id="tabs"></div>
+      <button id="tabArrowR" class="tabArrow" title="טאבים חדשים יותר">›</button>
+    </div>
   </header>
   <div id="wrap"><div id="content"><p id="empty">ממתין לסשנים…</p></div></div>
+  <button id="toBottom" title="גלול להודעה האחרונה">↓</button>
   <div id="working"></div>
   <div id="chips"></div>
   <div id="compose">
@@ -258,21 +423,42 @@
         <option value="full">⚡ כוח מלא</option>
       </select>
       <button id="attachBtn" title="צרף קובץ או תמונה">📎</button>
+      <button id="kbfixInline" title="המר את הטקסט בתיבה מאנגלית-בטעות לעברית (אם יש בחירה — רק החלק המסומן)">⌨️→</button>
       <input type="file" id="fileInput" multiple style="display:none">
       <textarea id="msg" rows="1" placeholder="כתוב הודעה ל-Claude…  (Enter לשליחה, Shift+Enter שורה חדשה, אפשר להדביק תמונה)"></textarea>
       <button id="sendBtn">שלח</button>
     </div>
   </div>
   <div id="composeNote" style="display:none"></div>
-  <div id="kbfix">
-    <div id="kbfixHead">⌨️ תיקון עברית <span id="kbfixToggle">▼</span></div>
-    <div id="kbfixBody">
-      <textarea id="kbfixIn" rows="3" placeholder="הדבק כאן טקסט שיצא באנגלית בטעות…"></textarea>
-      <div id="kbfixOut" class="empty">הפלט בעברית יופיע כאן</div>
-      <div id="kbfixActions">
-        <button id="kbfixGo">המר לעברית ←</button>
-        <button id="kbfixCopy">📋 העתק</button>
-        <button id="kbfixClear" title="נקה את הקלט והפלט">🗑️</button>
+  <div id="leftRail">
+    <div id="notes" class="collapsed">
+      <div id="notesHead">
+        <span id="notesTitle">📝 משימות</span>
+        <span id="notesToggle">▼</span>
+      </div>
+      <div id="notesPeek"></div>
+      <div id="notesBody">
+        <div id="notesAdd">
+          <input id="notesInput" type="text" placeholder="הוסף משימה… (Enter)">
+          <button id="notesAddBtn" title="הוסף משימה">＋</button>
+        </div>
+        <ul id="notesList"></ul>
+        <div id="notesDoneBar">
+          <button id="notesDoneToggle">▸ משימות שהושלמו (0)</button>
+          <div id="notesDone" class="hidden"></div>
+        </div>
+      </div>
+    </div>
+    <div id="kbfix">
+      <div id="kbfixHead">⌨️ תיקון עברית <span id="kbfixToggle">▼</span></div>
+      <div id="kbfixBody">
+        <textarea id="kbfixIn" rows="3" placeholder="הדבק כאן טקסט שיצא באנגלית בטעות…"></textarea>
+        <div id="kbfixOut" class="empty">הפלט בעברית יופיע כאן</div>
+        <div id="kbfixActions">
+          <button id="kbfixGo">המר לעברית ←</button>
+          <button id="kbfixCopy">📋 העתק</button>
+          <button id="kbfixClear" title="נקה את הקלט והפלט">🗑️</button>
+        </div>
       </div>
     </div>
   </div>
@@ -298,9 +484,55 @@
   const elAttach = document.getElementById('attachBtn');
   const elFile = document.getElementById('fileInput');
   const elChips = document.getElementById('chips');
-  let pendingFiles = [];   // [{path, name}] uploaded, to attach to the next message
+  let pendingFiles = [];   // [{path, name}] attachments for the CURRENT tab's next message
+  let filesByTab = {};     // id -> that tab's pending attachments (kept per-tab, like the text draft)
   const elWorking = document.getElementById('working');
-  let statusMap = {};      // id -> {state, started, detail, tokens} live indicator
+  const elToBottom = document.getElementById('toBottom');
+  const elWorkState = document.getElementById('workState');
+  let statusMap = {};      // id -> {state, started, detail, tokens, partial} live indicator
+  let serverDown = false;  // /status unreachable mid-run (e.g. a self-restart of this server)
+  let statusFails = 0;     // consecutive /status fetch failures (debounce a single transient miss)
+
+  // keep the floating left rail (tasks + ⌨️ fixer) sitting just UNDER the tab strip,
+  // never on top of it — recompute whenever the header changes height (tabs/history toggle)
+  (function syncRailTop() {
+    const elHeader = document.querySelector('header');
+    const setTop = () => document.documentElement.style.setProperty(
+      '--rail-top', (elHeader.getBoundingClientRect().height + 10) + 'px');
+    setTop();
+    if (window.ResizeObserver) new ResizeObserver(setTop).observe(elHeader);
+    window.addEventListener('resize', setTop);
+  })();
+
+  // let a normal (vertical) mouse-wheel scroll the tab strip sideways — many mice/trackpads
+  // can't scroll a horizontal strip otherwise, so the far tabs were unreachable.
+  // Use scrollBy (not scrollLeft=…), because the strip's `scroll-behavior: smooth` makes a
+  // direct scrollLeft assignment animate async — readback can't tell if it moved. In this
+  // RTL strip a NEGATIVE left delta walks toward the hidden/older tabs; positive returns.
+  elTabs.addEventListener('wheel', (e) => {
+    if (elTabs.scrollWidth - elTabs.clientWidth <= 1) return;   // nothing to scroll
+    const delta = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+    if (!delta) return;
+    elTabs.scrollBy({ left: -delta, behavior: 'instant' });
+    e.preventDefault();
+  }, { passive: false });
+
+  // clickable ‹ › arrows — the always-visible way to reach far tabs (no wheel/scrollbar needed).
+  // RTL strip: scrollLeft runs 0 (newest, right) → −max (oldest, left).
+  const elTabStrip = document.getElementById('tabStrip');
+  const elArrowL = document.getElementById('tabArrowL');
+  const elArrowR = document.getElementById('tabArrowR');
+  function updateTabArrows() {
+    const max = elTabs.scrollWidth - elTabs.clientWidth;
+    const sl = elTabs.scrollLeft;                       // 0 … −max
+    elTabStrip.classList.toggle('canL', max > 1 && sl > -max + 1);   // older tabs exist to the left
+    elTabStrip.classList.toggle('canR', max > 1 && sl < -1);         // newer tabs exist to the right
+  }
+  const tabPage = () => Math.max(120, elTabs.clientWidth * 0.7);
+  elArrowL.addEventListener('click', () => elTabs.scrollBy({ left: -tabPage(), behavior: 'smooth' }));
+  elArrowR.addEventListener('click', () => elTabs.scrollBy({ left:  tabPage(), behavior: 'smooth' }));
+  elTabs.addEventListener('scroll', updateTabArrows, { passive: true });
+  window.addEventListener('resize', updateTabArrows);
 
   // raw tool name (e.g. "Bash", "mcp__playwright__browser_evaluate") → readable Hebrew
   function friendlyTool(detail) {
@@ -328,23 +560,49 @@
     }
     return detail;
   }
-  function workLabel(st) {
+  // live "alive" indicator bits — a braille spinner + gerunds that rotate while it thinks,
+  // so the status feels like the terminal's "Spinning… · thinking more" rather than a frozen line
+  const SPIN = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  const THINK_WORDS = ['חושב', 'מהרהר', 'מתכנן', 'שוקל', 'מנתח', 'מעבד', 'רוקם רעיון', 'מצרף קצוות'];
+  let spinFrame = 0;
+  function elapsedSecs(st) {
+    return st && st.started ? Math.max(0, Math.floor(Date.now() / 1000 - st.started)) : 0;
+  }
+  function fmtElapsed(secs) {
+    return secs < 60 ? secs + ' שנ׳' : Math.floor(secs / 60) + ' דק׳ ' + (secs % 60) + ' שנ׳';
+  }
+  function workLabel(st, secs) {
     const s = st.state;
     if (s === 'tool') return '🔧 ' + friendlyTool(st.detail);
     if (s === 'responding') return '✍️ כותב';
-    if (s === 'thinking') return '🤔 חושב';
+    if (s === 'thinking') return '🤔 ' + THINK_WORDS[Math.floor((secs || 0) / 3) % THINK_WORDS.length] + '…';
     return '⏳ עובד';
+  }
+  // the body text of the bottom working line (spinner + label + elapsed + tokens)
+  function workBodyText(st) {
+    const secs = elapsedSecs(st);
+    let txt = SPIN[spinFrame % SPIN.length] + ' ' + workLabel(st, secs) + ' · ' + fmtElapsed(secs);
+    if (st.tokens) txt += ' · ' + fmtTok(st.tokens) + ' טוקנים';
+    return txt;
   }
   function renderWorking() {
     const st = statusMap[selectedId];
-    if (!st) { elWorking.className = ''; elWorking.innerHTML = ''; return; }
-    const secs = st.started ? Math.max(0, Math.floor(Date.now() / 1000 - st.started)) : 0;
-    const t = secs < 60 ? secs + ' שנ׳' : Math.floor(secs / 60) + ' דק׳ ' + (secs % 60) + ' שנ׳';
-    let txt = workLabel(st) + ' · ' + t;
-    if (st.tokens) txt += ' · ' + fmtTok(st.tokens) + ' טוקנים';
+    if (serverDown && st) {   // can't reach the server mid-run — show it, don't spin forever
+      elWorking.className = 'on';
+      elWorking.innerHTML = '<span class="pdot"></span><bdi dir="rtl">🔄 השרת מאותחל… ' +
+        'התשובה ממשיכה ברקע ותופיע כשהשרת יחזור</bdi>';
+      return;
+    }
+    if (!st) {   // not running — but flash "✓ הסתיים" briefly if this chat just finished
+      if (doneFlash[selectedId] && Date.now() < doneFlash[selectedId]) {
+        elWorking.className = 'on done';
+        elWorking.innerHTML = '<span class="pdot"></span><bdi dir="rtl">✓ הסתיים</bdi>';
+      } else { elWorking.className = ''; elWorking.innerHTML = ''; }
+      return;
+    }
     elWorking.className = 'on';
     // bdi + dir=rtl isolates any residual latin (unknown tool names) so the line never scrambles
-    elWorking.innerHTML = '<span class="pdot"></span><bdi dir="rtl">' + esc(txt) + '</bdi>' +
+    elWorking.innerHTML = '<span class="pdot"></span><bdi class="wbody" dir="rtl">' + esc(workBodyText(st)) + '</bdi>' +
       '<button id="stopBtn" title="עצור (כמו ESC) — אפשר אז לתקן/להוסיף">⏹ עצור</button>';
     const sb = document.getElementById('stopBtn');
     if (sb) sb.onclick = async () => {
@@ -354,6 +612,18 @@
           body: JSON.stringify({ id: selectedId }) });
       } catch (e) { /* ignore */ }
     };
+  }
+  // fast, cheap animation: advance the spinner + refresh elapsed time between the slower
+  // polls, updating ONLY the text nodes (never rebuilding the stop button mid-click)
+  function animateWork() {
+    const st = statusMap[selectedId];
+    if (!st) return;
+    spinFrame++;
+    const wb = elWorking.querySelector('.wbody');
+    if (wb) wb.textContent = workBodyText(st);
+    if (elWorkState.classList.contains('work')) {
+      elWorkState.textContent = SPIN[spinFrame % SPIN.length] + ' עובד… ' + fmtElapsed(elapsedSecs(st));
+    }
   }
 
   // populate the folder picker once
@@ -474,6 +744,12 @@
   if (_urlId) localStorage.setItem('rtl-selected', _urlId);
   let showHistory = localStorage.getItem('rtl-hist') === '1';
   let seenMtime = {};
+  let tabOrder = [];               // stable tab order (ids) — so a message never reshuffles tabs
+  try { tabOrder = JSON.parse(localStorage.getItem('rtl-taborder') || '[]') || []; } catch (e) {}
+  let prevStatusIds = new Set();   // ids that were running last tick (to detect a finish)
+  let doneFlash = {};              // id -> ms-expiry for the "✓ הסתיים" flash
+  let scrollPos = {};              // id -> last scrollTop, so switching tabs restores your place
+  let doneTabs = {};               // id -> true: a run finished on this tab, not yet viewed (green ✓)
   let lastMd = null;          // currently rendered markdown (change detection)
   let lastSelected = null;
   let pendingId = _urlId || null;       // a just-created chat that may not be in sessions.json yet
@@ -487,10 +763,47 @@
     }
   }, { passive: false });
 
+  // remember each chat's scroll position → restored on tab switch (per-tab, never shared)
+  function updateToBottom() {
+    const atBottom = (elWrap.scrollTop + elWrap.clientHeight) >= (elWrap.scrollHeight - 90);
+    elToBottom.classList.toggle('show', !atBottom && !!selectedId);
+  }
+  elWrap.addEventListener('scroll', () => {
+    if (selectedId) scrollPos[selectedId] = elWrap.scrollTop;
+    updateToBottom();
+  });
+  elToBottom.onclick = () => { elWrap.scrollTop = elWrap.scrollHeight; updateToBottom(); };
+
   elHist.onclick = () => {
     showHistory = !showHistory;
     localStorage.setItem('rtl-hist', showHistory ? '1' : '0');
   };
+
+  // ---- adopt: take ownership of a terminal-started (read-only) session ----
+  async function adoptSession(id, force) {
+    try {
+      const res = await fetch('/adopt', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, force: !!force })
+      });
+      if (res.status === 409) {   // a live terminal is open in this project
+        if (confirm('⚠️ נראה שטרמינל חי פתוח בפרויקט הזה.\nכתיבה מהדפדפן במקביל לטרמינל עלולה לשבש את הסשן.\nלאמץ בכל זאת?'))
+          return adoptSession(id, true);
+        return;
+      }
+      const j = await res.json();
+      if (j.status === 'adopted' || j.status === 'already-owned') {
+        selectedId = id; pendingId = id;
+        localStorage.setItem('rtl-selected', id);
+        lastMd = null; lastSelected = null;
+        tick();
+      }
+    } catch (e) { /* ignore */ }
+  }
+  elNote.addEventListener('click', (e) => {
+    const b = e.target.closest('#adoptBtn');
+    if (b) adoptSession(b.dataset.id);
+  });
 
   // ---- bidirectional: new chat + send ----
   elNew.onclick = async () => {
@@ -501,7 +814,6 @@
       });
       const d = await res.json();
       if (d.id) {
-        pendingFiles = []; renderChips();
         selectedId = d.id;
         pendingId = d.id;     // keep it selected even before it lands in sessions.json
         localStorage.setItem('rtl-selected', selectedId);
@@ -523,10 +835,13 @@
   let lastDraftChat = null;
   function loadDraft(id) {
     if (id === lastDraftChat) return;       // only when the chat actually changes — never clobber typing
+    if (lastDraftChat) filesByTab[lastDraftChat] = pendingFiles;   // stash the outgoing tab's attachments
     lastDraftChat = id;
     elMsg.value = localStorage.getItem(draftKey(id)) || '';
     elMsg.style.height = 'auto';
     elMsg.style.height = Math.min(elMsg.scrollHeight, 220) + 'px';
+    pendingFiles = filesByTab[id] || [];    // restore THIS tab's attachments (none → empty)
+    renderChips();
   }
 
   // ---- optimistic echo: show the just-sent message instantly (poll catches up in ~1s) ----
@@ -553,7 +868,7 @@
     elMsg.value = ''; elMsg.style.height = 'auto';
     localStorage.removeItem(draftKey(selectedId));   // sent → drop the saved draft
     appendOptimistic(text, files);                   // show it immediately
-    pendingFiles = []; renderChips();
+    pendingFiles = []; if (selectedId) filesByTab[selectedId] = []; renderChips();
     elSend.disabled = true; elSend.textContent = 'שולח…';
     try {
       await fetch('/send', {
@@ -608,6 +923,24 @@
       tgl.textContent = wrap.classList.contains('collapsed') ? '▲' : '▼';
     });
   })();
+
+  // ⌨️→ in-place fix: convert the compose box itself (selection if any, else whole text)
+  (function () {
+    const btn = document.getElementById('kbfixInline');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      const v = elMsg.value;
+      let s = elMsg.selectionStart, e = elMsg.selectionEnd;
+      if (s == null || e == null || s === e) { s = 0; e = v.length; }   // no selection → whole box
+      const fixed = convertKbLayout(v.slice(s, e));
+      elMsg.value = v.slice(0, s) + fixed + v.slice(e);
+      elMsg.setSelectionRange(s, s + fixed.length);                     // re-select the converted span
+      elMsg.dispatchEvent(new Event('input', { bubbles: true }));       // auto-grow + persist draft
+      elMsg.focus();
+      btn.classList.add('flash');
+      setTimeout(() => btn.classList.remove('flash'), 700);
+    });
+  })();
   elMsg.addEventListener('input', () => {   // auto-grow + persist draft
     elMsg.style.height = 'auto';
     elMsg.style.height = Math.min(elMsg.scrollHeight, 220) + 'px';
@@ -647,7 +980,14 @@
     lastComposeOwned = owned;
     if (owned) { elNote.style.display = 'none'; return; }
     elNote.style.display = sel ? 'block' : 'none';
-    if (sel) elNote.textContent = '👁️ שיחה זו נפתחה בטרמינל — צפייה בלבד. ל"➕ שיחה חדשה" כדי לכתוב.';
+    if (sel) {   // read-only terminal session → offer to adopt it (rebuild only on change)
+      const cur = elNote.querySelector('#adoptBtn');
+      if (!cur || cur.dataset.id !== sel.id) {
+        elNote.innerHTML = '👁️ שיחה זו נפתחה בטרמינל — צפייה בלבד. ' +
+          '<button id="adoptBtn" data-id="' + esc(sel.id) + '" ' +
+          'title="הפוך לשיחה מנוהלת — לכתיבה ולסגירה">✋ אמץ שיחה זו</button>';
+      }
+    }
   }
 
   // group flat rendered output into per-turn boxes (h3 header starts a turn)
@@ -688,10 +1028,12 @@
   function makeTab(s, isHist) {
     const tab = document.createElement('div');
     tab.className = 'tab' + (s.id === selectedId ? ' active' : '') + (isHist ? ' hist' : '') +
-      (s.owned ? ' owned' : '') + (statusMap[s.id] ? ' busy' : '');
+      (s.owned ? ' owned' : '') + (statusMap[s.id] ? ' busy' : '') +
+      (doneTabs[s.id] && s.id !== selectedId ? ' finished' : '');
+    tab.dataset.id = s.id;
     const changed = seenMtime[s.id] !== undefined && s.mtime > seenMtime[s.id];
     if (changed && s.id !== selectedId) tab.classList.add('haschange');
-    tab.innerHTML = '<span class="ping"></span>' +
+    tab.innerHTML = '<span class="ping"></span><span class="donecheck">✓</span>' +
       (s.owned ? '<span class="close" title="סגור שיחה (תעבור להיסטוריה)">✕</span>' : '') +
       '<span class="name">' + esc(tabName(s)) + '</span>' +
       '<span class="sub">' + esc(s.project) + ' · ' + fmtTime(s.mtime) + '</span>';
@@ -706,6 +1048,7 @@
     };
     tab.onclick = () => {
       selectedId = s.id;
+      delete doneTabs[s.id];                // opening the tab clears its "finished" ✓
       localStorage.setItem('rtl-selected', selectedId);
       seenMtime[s.id] = s.mtime;
       lastMd = null; lastSelected = null;   // force re-render of new tab
@@ -726,6 +1069,7 @@
     elTabs.innerHTML = '';
     active.forEach(s => elTabs.appendChild(makeTab(s, false)));
     if (showHistory) history.forEach(s => elTabs.appendChild(makeTab(s, true)));
+    requestAnimationFrame(updateTabArrows);   // refresh ‹ › arrow visibility for the new tab set
   }
 
   async function fetchContent(sel) {
@@ -742,6 +1086,8 @@
       const md = await res.text();
       if (md === lastMd && sel.id === lastSelected) return;
       const sameSession = (sel.id === lastSelected);
+      const prevTop = elWrap.scrollTop;
+      const atBottom = (elWrap.scrollTop + elWrap.clientHeight) >= (elWrap.scrollHeight - 90);
       lastMd = md; lastSelected = sel.id;
       // remember which tool blocks were open (same session only) so a 1s refresh
       // doesn't collapse what you're reading
@@ -750,27 +1096,171 @@
         openIdx = new Set();
         elContent.querySelectorAll('details.tool').forEach((d, i) => { if (d.open) openIdx.add(i); });
       }
-      const atBottom = (elWrap.scrollTop + elWrap.clientHeight) >= (elWrap.scrollHeight - 90);
       elContent.innerHTML = window.marked ? marked.parse(md)
                                           : '<pre>' + md.replace(/</g, '&lt;') + '</pre>';
       if (window.marked) decorateTurns();
       if (openIdx) elContent.querySelectorAll('details.tool').forEach((d, i) => { if (openIdx.has(i)) d.open = true; });
-      if (atBottom) elWrap.scrollTop = elWrap.scrollHeight;
+      if (sameSession) {
+        elWrap.scrollTop = atBottom ? elWrap.scrollHeight : prevTop;   // follow the bottom, else stay where you were
+      } else {
+        // switched tab → restore ITS place; re-apply next frame so a not-yet-laid-out
+        // (or just-grown) render can't clamp us too high up the conversation
+        const saved = scrollPos[sel.id];
+        const applyScroll = () => { elWrap.scrollTop = (saved == null) ? elWrap.scrollHeight : saved; };
+        applyScroll();
+        requestAnimationFrame(applyScroll);
+      }
     } catch (e) { /* keep last content on a transient miss */ }
+  }
+
+  // ---- stable tab order: pin each tab's slot so sending a message never reshuffles ----
+  function applyStableOrder(active, history) {
+    const all = [...active, ...history];
+    const present = new Set(all.map(s => s.id));
+    let changed = false;
+    if (!tabOrder.length) {
+      tabOrder = all.map(s => s.id); changed = true;          // seed once with the current order
+    } else {
+      all.forEach(s => { if (!tabOrder.includes(s.id)) { tabOrder.unshift(s.id); changed = true; } });  // new chat → rightmost, then fixed
+    }
+    const pruned = tabOrder.filter(id => present.has(id) || id === selectedId || id === pendingId);
+    if (pruned.length !== tabOrder.length) { tabOrder = pruned; changed = true; }
+    if (changed) localStorage.setItem('rtl-taborder', JSON.stringify(tabOrder));
+    const rank = (id) => { const i = tabOrder.indexOf(id); return i < 0 ? 1e9 : i; };
+    return {
+      active: active.slice().sort((a, b) => rank(a.id) - rank(b.id)),
+      history: history.slice().sort((a, b) => rank(a.id) - rank(b.id)),
+    };
+  }
+
+  // ---- browser tab title + favicon: shows working / ready even from another browser tab ----
+  function setFavicon(state) {
+    const color = state === 'idle' ? '#89b4fa' : '#a6e3a1';   // blue idle, green working/ready
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' +
+      '<rect width="32" height="32" rx="7" fill="#1e1e2e"/>' +
+      '<circle cx="16" cy="16" r="9" fill="' + color + '"/></svg>';
+    let link = document.getElementById('favicon');
+    if (!link) { link = document.createElement('link'); link.id = 'favicon'; link.rel = 'icon'; document.head.appendChild(link); }
+    link.href = 'data:image/svg+xml,' + encodeURIComponent(svg);
+  }
+  function anyDoneFlash() { const now = Date.now(); return Object.values(doneFlash).some(t => now < t); }
+  function updateDocTitle() {
+    const base = 'Claude · RTL Chat';
+    if (Object.keys(statusMap).length) { document.title = '● עובד… · ' + base; setFavicon('work'); }
+    else if (anyDoneFlash()) { document.title = '✓ מוכן · ' + base; setFavicon('done'); }
+    else { document.title = base; setFavicon('idle'); }
+  }
+
+  // big header pill for the CURRENT chat — 🟡 working (with elapsed) / 🟢 ready
+  function updateWorkState() {
+    const st = statusMap[selectedId];
+    if (st) {
+      elWorkState.className = 'work';
+      elWorkState.textContent = SPIN[spinFrame % SPIN.length] + ' עובד… ' + fmtElapsed(elapsedSecs(st));
+    } else if (doneFlash[selectedId] && Date.now() < doneFlash[selectedId]) {
+      elWorkState.className = 'ready'; elWorkState.textContent = '✓ הסתיים';
+    } else {
+      elWorkState.className = 'ready'; elWorkState.textContent = '🟢 מוכן';
+    }
+  }
+
+  // live-streaming assistant reply: show the in-progress text (from /status) as it arrives
+  function renderStreaming() {
+    const st = statusMap[selectedId];
+    const partial = (st && st.state === 'responding' && st.partial) ? st.partial : '';
+    let bubble = document.getElementById('streaming');
+    if (!partial) { if (bubble) bubble.remove(); return; }
+    const atBottom = (elWrap.scrollTop + elWrap.clientHeight) >= (elWrap.scrollHeight - 90);
+    if (!bubble || bubble.parentNode !== elContent) {
+      bubble = document.createElement('div');
+      bubble.id = 'streaming'; bubble.className = 'turn assistant';
+      elContent.appendChild(bubble);
+    }
+    const empty = elContent.querySelector('#empty'); if (empty) empty.remove();
+    bubble.innerHTML = '<h3>🤖 Claude</h3>' +
+      (window.marked ? marked.parse(partial) : '<div style="white-space:pre-wrap">' + esc(partial) + '</div>') +
+      '<span class="caret"></span>';
+    if (atBottom) elWrap.scrollTop = elWrap.scrollHeight;
+  }
+
+  // safety net: a reply that was streamed live but never saved to the transcript
+  // (turn crashed mid-write — API drop / kill). The server persists it to
+  // s-<id>.interrupted; show it here so the text isn't silently lost.
+  let interruptedBusy = false;
+  async function renderInterrupted(sel) {
+    if (!sel) return;
+    const existing = () => document.getElementById('interrupted');
+    if (statusMap[sel.id]) { const b = existing(); if (b) b.remove(); return; }  // a new run supersedes it
+    if (interruptedBusy) return;
+    interruptedBusy = true;
+    let txt = '';
+    try {
+      const r = await fetch('s-' + sel.id + '.interrupted?t=' + Date.now(), { cache: 'no-store' });
+      if (r.ok) txt = (await r.text() || '').trim();
+    } catch (e) { interruptedBusy = false; return; }
+    interruptedBusy = false;
+    if (sel.id !== selectedId) return;             // tab switched mid-fetch
+    let b = existing();
+    if (!txt) { if (b) b.remove(); return; }
+    if (!b || b.parentNode !== elContent) {
+      b = document.createElement('div'); b.id = 'interrupted'; b.className = 'turn assistant interrupted';
+      elContent.appendChild(b);
+    }
+    b.innerHTML = '<h3>🤖 Claude · <span class="intbadge">⚠️ התשובה נקטעה — לא נשמרה בתמלול</span></h3>' +
+      (window.marked ? marked.parse(txt) : '<div style="white-space:pre-wrap">' + esc(txt) + '</div>') +
+      '<div class="intactions"><button class="intDismiss">סגור הודעה זו</button></div>';
+    b.querySelector('.intDismiss').onclick = async () => {
+      b.remove();
+      try {
+        await fetch('/dismiss-interrupted', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: sel.id }) });
+      } catch (e) { /* it'll also clear on the next message */ }
+    };
+  }
+
+  // reflect running (⏳) / finished (✓) on existing tabs without a full strip rebuild
+  function paintTabStates() {
+    document.querySelectorAll('#tabs .tab').forEach(tab => {
+      const id = tab.dataset.id;
+      tab.classList.toggle('busy', !!statusMap[id]);
+      tab.classList.toggle('finished', !!doneTabs[id] && id !== selectedId);
+    });
+  }
+
+  // fast, lightweight status poll: live indicator + streaming text + finished marks
+  async function pollStatus() {
+    let m;
+    try { m = await (await fetch('/status?t=' + Date.now(), { cache: 'no-store' })).json() || {}; }
+    catch (e) {                                    // /status unreachable
+      statusFails++;
+      // mid-run + can't reach the server (commonly: the chat just restarted its OWN server)
+      // → don't leave a frozen spinner. The turn now runs detached and keeps writing the
+      // transcript; surface that instead of pretending it's still streaming.
+      if (statusFails >= 2 && Object.keys(statusMap).length) { serverDown = true; renderWorking(); }
+      return;                                       // otherwise keep last state
+    }
+    statusFails = 0; serverDown = false;
+    const nowIds = new Set(Object.keys(m));
+    prevStatusIds.forEach(id => {                   // was running, now gone → just finished
+      if (!nowIds.has(id)) { doneFlash[id] = Date.now() + 4000; if (id !== selectedId) doneTabs[id] = true; }
+    });
+    prevStatusIds = nowIds;
+    statusMap = m;
+    if (selectedId) delete doneTabs[selectedId];    // you're viewing it → no ✓ needed
+    renderWorking(); renderStreaming(); updateDocTitle(); updateWorkState(); paintTabStates(); updateToBottom();
   }
 
   async function tick() {
     try {
-      try { statusMap = await (await fetch('/status?t=' + Date.now(), { cache: 'no-store' })).json() || {}; }
-      catch (e) { statusMap = {}; }
       try { window._owned = await (await fetch('owned.json?t=' + Date.now(), { cache: 'no-store' })).json() || {}; }
       catch (e) { window._owned = window._owned || {}; }
       const res = await fetch('sessions.json?t=' + Date.now(), { cache: 'no-store' });
       if (!res.ok) throw new Error(res.status);
       const data = await res.json();
       const sessions = data.sessions || [];
-      const active = sessions.filter(s => s.active);
-      const history = sessions.filter(s => !s.active);
+      let active = sessions.filter(s => s.active);
+      let history = sessions.filter(s => !s.active);
+      ({ active, history } = applyStableOrder(active, history));   // keep tabs in a fixed order
       window._active = active; window._history = history;   // for instant re-render on rename
       elDot.classList.add('live');
       elStatus.textContent = 'חי · ' + active.length + ' פעיל' + (active.length === 1 ? '' : 'ים') +
@@ -795,10 +1285,15 @@
       }
       setCompose(sel);
       renderWorking();
+      updateDocTitle();
+      updateWorkState();
       if (sel) {
         seenMtime[sel.id] = sel.mtime;
         elFootTok.textContent = '🔤 ' + fmtTok(sel.tokens) + ' טוקנים · ' + fmtTok(sel.out) + ' out';
         await fetchContent(sel);
+        renderStreaming();
+        renderInterrupted(sel);
+        updateToBottom();
       } else { elContent.innerHTML = '<p id="empty">אין סשן נבחר…</p>'; }
       updateMax();
     } catch (e) {
@@ -806,8 +1301,147 @@
       elStatus.textContent = 'אין חיבור לשרת (' + e.message + ')';
     }
   }
+  // ── 📝 daily tasks / sticky-notes widget (left rail) ──────────────────────
+  // Persists in localStorage; the open list carries over day-to-day (only the
+  // title changes with the weekday). Completing a task moves it — with its
+  // open/close dates and an optional closing note — to the "done" archive.
+  (function () {
+    const KEY = 'rtl-tasks-v1';
+    const WD = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
+    const $ = (id) => document.getElementById(id);
+    const elNotes = $('notes'), elHead = $('notesHead'), elTitle = $('notesTitle'),
+      elTgl = $('notesToggle'), elPeek = $('notesPeek'), elInput = $('notesInput'),
+      elAdd = $('notesAddBtn'), elList = $('notesList'),
+      elDoneTgl = $('notesDoneToggle'), elDone = $('notesDone');
+
+    function esc(s) {
+      return (s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    }
+    function load() {
+      try {
+        const d = JSON.parse(localStorage.getItem(KEY));
+        if (d && Array.isArray(d.active) && Array.isArray(d.done)) return d;
+      } catch (e) { /* ignore */ }
+      return { active: [], done: [] };
+    }
+    let state = load();
+    const save = () => localStorage.setItem(KEY, JSON.stringify(state));
+    const uid = () => 't' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
+    const dayKey = (ts) => { const d = new Date(ts); return d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate(); };
+    function fmtDate(ts) {
+      const d = new Date(ts);
+      return 'יום ' + WD[d.getDay()] + ' · ' +
+        d.toLocaleDateString('he-IL', { day: '2-digit', month: '2-digit', year: '2-digit' }) + ' ' +
+        d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+    }
+    const setTitle = () => { elTitle.textContent = '📝 משימות ליום ' + WD[new Date().getDay()] + ' אלחנן'; };
+
+    function render() {
+      setTitle();
+      // peek (collapsed) — up to 3 open tasks
+      if (!state.active.length) {
+        elPeek.innerHTML = '<div class="notesEmpty">אין משימות פתוחות 🎉</div>';
+      } else {
+        const top = state.active.slice(0, 3).map(t =>
+          '<div class="peekItem"><span class="cb" data-done="' + t.id + '" title="סמן כבוצע"></span>' +
+          '<span class="ptxt">' + esc(t.text) + '</span></div>').join('');
+        const extra = state.active.length - 3;
+        elPeek.innerHTML = top + (extra > 0 ? '<div class="peekMore">+ עוד ' + extra + ' משימות…</div>' : '');
+      }
+      // full open list (expanded)
+      if (!state.active.length) {
+        elList.innerHTML = '<li class="notesEmpty">אין משימות פתוחות 🎉</li>';
+      } else {
+        const todayK = dayKey(Date.now());
+        elList.innerHTML = state.active.map(t => {
+          const carried = dayKey(t.createdAt) !== todayK
+            ? '<span class="taskMeta">↪ מאז יום ' + WD[new Date(t.createdAt).getDay()] + '</span>' : '';
+          return '<li class="taskItem" data-id="' + t.id + '">' +
+            '<span class="cb" data-done="' + t.id + '" title="סמן כבוצע"></span>' +
+            '<span class="taskTxt">' + esc(t.text) + carried + '</span>' +
+            '<span class="taskDel" data-del="' + t.id + '" title="מחק">🗑</span></li>';
+        }).join('');
+      }
+      // done archive
+      const hidden = elDone.classList.contains('hidden');
+      elDoneTgl.textContent = (hidden ? '▸ ' : '▾ ') + 'משימות שהושלמו (' + state.done.length + ')';
+      elDone.innerHTML = state.done.length
+        ? state.done.slice().reverse().map(t =>
+            '<div class="doneItem">' +
+              '<div class="t">' + esc(t.text) + '</div>' +
+              '<div class="dates"><span>🟢 נפתחה: ' + fmtDate(t.createdAt) + '</span>' +
+                '<span>✓ נסגרה: ' + fmtDate(t.doneAt) + '</span></div>' +
+              (t.note ? '<div class="note">📝 ' + esc(t.note) + '</div>' : '') +
+              '<span class="restore" data-restore="' + t.id + '">↩ החזר לפתוחות</span>' +
+            '</div>').join('')
+        : '<div class="notesEmpty">עדיין לא הושלמו משימות</div>';
+    }
+
+    function add() {
+      const v = elInput.value.trim();
+      if (!v) return;
+      state.active.unshift({ id: uid(), text: v, createdAt: Date.now() });
+      elInput.value = ''; save(); render();
+    }
+    function complete(id) {
+      const i = state.active.findIndex(t => t.id === id);
+      if (i < 0) return;
+      const note = prompt('משימה הושלמה! 🎉\nהערת סגירה (אופציונלי — אפשר להשאיר ריק):', '');
+      const t = state.active.splice(i, 1)[0];
+      t.doneAt = Date.now(); t.note = (note || '').trim();
+      state.done.push(t); save(); render();
+    }
+    function del(id) {
+      if (!confirm('למחוק את המשימה?')) return;
+      state.active = state.active.filter(t => t.id !== id); save(); render();
+    }
+    function restore(id) {
+      const i = state.done.findIndex(t => t.id === id);
+      if (i < 0) return;
+      const t = state.done.splice(i, 1)[0];
+      delete t.doneAt; delete t.note;
+      state.active.unshift(t); save(); render();
+    }
+
+    function onComplete(e) {
+      const c = e.target.closest('[data-done]');
+      if (!c) return;
+      const li = c.closest('.taskItem');
+      if (li) { li.classList.add('done'); setTimeout(() => complete(c.dataset.done), 200); }
+      else complete(c.dataset.done);
+    }
+    elPeek.addEventListener('click', onComplete);
+    elList.addEventListener('click', (e) => {
+      const d = e.target.closest('[data-del]');
+      if (d) { del(d.dataset.del); return; }
+      onComplete(e);
+    });
+    elDone.addEventListener('click', (e) => {
+      const r = e.target.closest('[data-restore]');
+      if (r) restore(r.dataset.restore);
+    });
+    elAdd.onclick = add;
+    elInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+    elHead.addEventListener('click', () => {
+      elNotes.classList.toggle('collapsed');
+      const collapsed = elNotes.classList.contains('collapsed');
+      elTgl.textContent = collapsed ? '▼' : '▲';
+      localStorage.setItem('rtl-notes-collapsed', collapsed ? '1' : '0');
+    });
+    elDoneTgl.onclick = () => { elDone.classList.toggle('hidden'); render(); };
+
+    if (localStorage.getItem('rtl-notes-collapsed') === '0') {
+      elNotes.classList.remove('collapsed'); elTgl.textContent = '▲';
+    }
+    render();
+    setInterval(setTitle, 60000);   // keep the weekday title fresh across midnight
+  })();
+
   tick();
   setInterval(tick, 1000);
+  pollStatus();
+  setInterval(pollStatus, 400);   // live working-indicator + streaming text, faster than the 1s tick
+  setInterval(animateWork, 110);  // smooth spinner + ticking elapsed time between polls
 </script>
 </body>
 </html>

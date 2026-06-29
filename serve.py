@@ -55,6 +55,9 @@ PERM_MODES = {
     "full": ["--permission-mode", "bypassPermissions"],
 }
 DEFAULT_PERM = "read"
+# When adopting a terminal-started session, map its recorded permissionMode back
+# onto our 3 levels (default/plan and anything unknown → the safe "read").
+PERM_FROM_MODE = {"acceptEdits": "edit", "bypassPermissions": "full"}
 
 os.chdir(BASE)
 sys.path.insert(0, BASE)
@@ -113,6 +116,31 @@ def clear_status(sid):
         _status.pop(sid, None)
 
 
+def interrupted_path(sid):
+    return os.path.join(BASE, f"s-{sid}.interrupted")
+
+
+def clear_interrupted(sid):
+    try:
+        os.remove(interrupted_path(sid))
+    except OSError:
+        pass
+
+
+def save_interrupted(sid, text):
+    """Safety net: when a turn dies mid-reply (API error / kill / crash), the streamed
+    text was only ever live in /status and never reached the transcript. Persist it so
+    the browser can still show it instead of silently losing the reply."""
+    text = (text or "").strip()
+    if not text:
+        return
+    try:
+        with open(interrupted_path(sid), "w", encoding="utf-8") as f:
+            f.write(text)
+    except Exception:
+        pass
+
+
 def _lock_for(sid):
     with _locks_guard:
         if sid not in _locks:
@@ -139,6 +167,32 @@ def transcript_exists(sid):
     return bool(glob.glob(os.path.join(PROJECTS, "*", f"{sid}.jsonl")))
 
 
+def session_meta_from_transcript(sid):
+    """Read (cwd, permissionMode) from a session's transcript — every Claude Code
+    event records its cwd, so an adopted terminal session resumes in the right dir."""
+    path = next(iter(glob.glob(os.path.join(PROJECTS, "*", f"{sid}.jsonl"))), None)
+    cwd = perm = None
+    if not path:
+        return cwd, perm
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                cwd = cwd or e.get("cwd")
+                perm = perm or e.get("permissionMode")
+                if cwd and perm:
+                    break
+    except Exception:
+        pass
+    return cwd, perm
+
+
 def run_claude(sid, text):
     """Stream claude -p; reply still lands in the transcript (rendered by the mirror),
     while stdout stream-json events drive the live 'working' indicator (_status)."""
@@ -156,9 +210,19 @@ def run_claude(sid, text):
     env = os.environ.copy()
     env["PATH"] = CHILD_PATH
     set_status(sid, state="thinking", started=time.time(), detail=None, tokens=0)
+    clear_interrupted(sid)   # this retry supersedes any earlier crashed attempt
+    partial = [""]   # live assistant text for this turn, streamed to the browser via /status
+    ok = False       # did the turn finish cleanly? if not, we keep the streamed text
     try:
+        # start_new_session: run claude in its OWN process group/session so a restart
+        # of THIS server (launchd kickstart of com.elchanan.rtl-chat) only kills serve.py
+        # and leaves the in-flight turn running to finish writing the transcript — instead
+        # of killing the reply mid-write. (Classic self-restart footgun: asking the chat to
+        # restart its own server used to nuke the very turn that issued the command.) /stop
+        # still works: we SIGTERM the proc directly, not via serve.py's group.
         proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, text=True, env=env)
+                                stderr=subprocess.DEVNULL, text=True, env=env,
+                                start_new_session=True)
         with _procs_lock:
             _procs[sid] = proc
         for line in proc.stdout:
@@ -173,7 +237,10 @@ def run_claude(sid, text):
                 continue
             ev = e.get("event") or {}
             et = ev.get("type")
-            if et == "content_block_start":
+            if et == "message_start":
+                partial[0] = ""
+                set_status(sid, partial="")
+            elif et == "content_block_start":
                 cb = ev.get("content_block") or {}
                 bt = cb.get("type")
                 if bt == "thinking":
@@ -182,18 +249,26 @@ def run_claude(sid, text):
                     set_status(sid, state="responding", detail=None)
                 elif bt == "tool_use":
                     set_status(sid, state="tool", detail=cb.get("name"))
+            elif et == "content_block_delta":
+                delta = ev.get("delta") or {}
+                if delta.get("type") == "text_delta" and delta.get("text"):
+                    partial[0] += delta["text"]
+                    set_status(sid, partial=partial[0])
             elif et == "message_delta":
                 u = ev.get("usage") or {}
                 if u.get("output_tokens"):
                     set_status(sid, tokens=u["output_tokens"])
         proc.wait(timeout=600)
-        if proc.returncode not in (0, None):
+        ok = proc.returncode in (0, None)
+        if not ok:
             print(f"[send {sid[:8]}] rc={proc.returncode}", flush=True)
     except Exception as e:
         print(f"[send {sid[:8]}] error: {e}", flush=True)
     finally:
         with _procs_lock:
             _procs.pop(sid, None)
+        if not ok:                       # crashed/killed mid-reply → don't lose the text
+            save_interrupted(sid, partial[0])
         clear_status(sid)
 
 
@@ -288,6 +363,36 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 write_owned(d)
             return self._json(200, {"status": "ok", "perm": perm})
 
+        if self.path == "/adopt":                  # take over a terminal-started session
+            sid = body.get("id")
+            if not sid or not transcript_exists(sid):
+                return self._json(404, {"error": "no such session"})
+            with _owned_lock:
+                if sid in read_owned():
+                    return self._json(200, {"status": "already-owned"})
+            cwd, mode = session_meta_from_transcript(sid)
+            if not cwd or not os.path.isdir(cwd):
+                cwd = DEFAULT_CWD
+            # safety: a live `claude` terminal in this project + a browser send would
+            # have two processes resume the same transcript. Warn unless forced.
+            if not body.get("force"):
+                try:
+                    if extract.live_counts().get(cwd.replace("/", "-"), 0) > 0:
+                        return self._json(409, {"warning": "live-terminal", "cwd": cwd})
+                except Exception:
+                    pass
+            perm = PERM_FROM_MODE.get(mode, DEFAULT_PERM)
+            with _owned_lock:
+                d = read_owned()
+                d[sid] = {"created": int(time.time()), "title": "שיחה מאומצת",
+                          "cwd": cwd, "perm": perm, "adopted": True}
+                write_owned(d)
+            try:
+                extract.main()   # surface it as owned (writable + closable) at once
+            except Exception:
+                pass
+            return self._json(200, {"status": "adopted", "cwd": cwd, "perm": perm})
+
         if self.path == "/upload":
             name = os.path.basename(body.get("name") or "file")
             data = body.get("data") or ""
@@ -304,6 +409,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         if self.path == "/close":
             sid = body.get("id")
+            clear_interrupted(sid)        # drop any saved crashed-reply text
             with _owned_lock:
                 d = read_owned()
                 if sid in d:
@@ -314,6 +420,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 pass
             return self._json(200, {"status": "closed"})
+
+        if self.path == "/dismiss-interrupted":   # user acknowledged the crashed-reply block
+            clear_interrupted(body.get("id"))
+            return self._json(200, {"status": "ok"})
 
         if self.path == "/stop":
             sid = body.get("id")

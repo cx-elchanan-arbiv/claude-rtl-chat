@@ -36,18 +36,65 @@ def project_label(project_dir):
     return name.rstrip("-").split("-")[-1] or name
 
 
-def live_counts():
-    """Map sanitized project-dir -> number of live `claude` terminal processes
-    whose cwd is that project. This is the real 'which terminals are open' signal
-    (transcript mtime can't tell an idle-open session from a just-closed one).
-    Returns {} if detection fails → caller falls back to the time window."""
+def _claude_pids():
     try:
         ps = subprocess.run(["ps", "-Ao", "pid,comm"],
                             capture_output=True, text=True, timeout=4).stdout
     except Exception:
-        return {}
-    pids = [p.split()[0] for p in ps.splitlines()
+        return None
+    return [p.split()[0] for p in ps.splitlines()
             if p.strip().split()[1:2] == ["claude"]]
+
+
+SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
+
+
+def live_session_ids():
+    """PRECISE 'which sessions are live in a terminal' signal: Claude Code writes
+    ~/.claude/sessions/<pid>.json for every running process, recording its exact
+    sessionId + cwd. We read those and keep only the ones whose pid is still a
+    live `claude` process (the files linger after a crash), giving the precise set
+    of session ids currently open in a terminal.
+
+    Returns that set, or None when we can't tell — no `ps`, can't read the dir, or
+    claude is running yet no session file matches (the layout changed) — so the
+    caller falls back to live_counts(). An empty set means: ps worked, no claude
+    terminals → nothing is live."""
+    pids = _claude_pids()
+    if pids is None:
+        return None
+    if not pids:
+        return set()                 # definitively nothing live
+    live_pids = set(pids)
+    try:
+        files = os.listdir(SESSIONS_DIR)
+    except Exception:
+        return None
+    ids, matched = set(), False
+    for fn in files:
+        if not fn.endswith(".json") or fn[:-len(".json")] not in live_pids:
+            continue                 # not a session file, or stale (pid not running)
+        matched = True
+        try:
+            with open(os.path.join(SESSIONS_DIR, fn), encoding="utf-8") as fh:
+                sid = (json.load(fh) or {}).get("sessionId")
+        except Exception:
+            continue
+        if sid:
+            ids.add(sid)
+    return ids if matched else None  # no file matched a live pid → let caller fall back
+
+
+def live_counts():
+    """FALLBACK 'which terminals are open' signal: map sanitized project-dir ->
+    number of live `claude` processes whose cwd is that project. Used only when
+    live_session_ids() can't pin the exact ids. Note: a count alone can't say
+    *which* sessions are live, so the caller approximates with the most-recent K
+    per project — which is why the precise signal above is preferred.
+    Returns {} if detection fails → caller falls back to the time window."""
+    pids = _claude_pids()
+    if not pids:
+        return {}
     counts = {}
     for pid in pids:
         try:
@@ -132,13 +179,23 @@ def result_text(blk):
     return str(c)
 
 
+# Claude Code writes this exact text into the transcript when a turn ends with no
+# reply of its own (e.g. it finished via tool calls and added no closing prose). It's
+# benign — NOT an error — but raw it reads like "Claude refused to answer". Show a calm,
+# clear note instead so it doesn't look broken.
+NO_REPLY_TEXT = "No response requested."
+NO_REPLY_HTML = ('<div class="noreply">↳ Claude סיים את התור בלי הודעת טקסט '
+                 '(בדרך כלל אחרי הרצת כלים). זה תקין — אפשר להמשיך.</div>')
+
+
 def render_assistant(content):
     out = []
     for blk in content:
         if not isinstance(blk, dict):
             continue
         if blk.get("type") == "text" and blk.get("text"):
-            out.append(blk["text"].strip())
+            t = blk["text"].strip()
+            out.append(NO_REPLY_HTML if t == NO_REPLY_TEXT else t)
         elif blk.get("type") == "tool_use":
             summ, body, is_open, cls = summarize_tool(blk.get("name", ""), blk.get("input", {}) or {})
             out.append(details(summ, body, cls=cls, is_open=is_open))
@@ -248,7 +305,8 @@ def main():
 
     cache, new_cache = load_cache(), {}
     sessions, keep = [], set()
-    live = live_counts()      # {projdir: open-terminal count}; files are mtime-desc
+    live_ids = live_session_ids()   # exact set of sids live in a terminal (or None)
+    live = live_counts() if live_ids is None else {}   # fallback count, only if needed
     used = {}                 # how many we've marked active per project so far
     try:
         with open(OWNED, encoding="utf-8") as fh:
@@ -275,10 +333,13 @@ def main():
                 continue
             write_atomic(mdpath, md)
 
-        # active = an open `claude` terminal in this project (top-K by recency);
-        # fall back to the time window if process detection found nothing.
+        # active = this exact session is held open by a live `claude` terminal.
+        # Fallbacks when the precise signal is unavailable: an open terminal in
+        # this project (top-K by recency), else the recent-mtime time window.
         projdir = os.path.basename(os.path.dirname(path))
-        if live:
+        if live_ids is not None:
+            is_active = sid in live_ids
+        elif live:
             k = live.get(projdir, 0)
             is_active = used.get(projdir, 0) < k
             if is_active:
