@@ -13,3 +13,6 @@ owned.json
 
 TODO.md
 TROUBLESHOOTING.md
+
+.playwright-mcp/
+matza-site/
