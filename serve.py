@@ -206,7 +206,7 @@ def run_claude(sid, text):
         heal_transcript(sid)   # safety net: a prior /stop may have left a half-written line
     sess = ["--session-id", sid] if first else ["--resume", sid]
     cmd = [CLAUDE_BIN, "-p", text, *sess, "--add-dir", UPLOADS,
-           "--output-format", "stream-json", "--include-partial-messages", "--verbose", *perm_flags]
+           "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--chrome", *perm_flags]
     env = os.environ.copy()
     env["PATH"] = CHILD_PATH
     set_status(sid, state="thinking", started=time.time(), detail=None, tokens=0)
