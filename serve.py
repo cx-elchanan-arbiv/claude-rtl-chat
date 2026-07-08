@@ -47,8 +47,13 @@ os.makedirs(UPLOADS, exist_ok=True)
 # (forms per the official Claude Code docs: headless / permission-modes / permissions).
 #   read = SAFE default: read/search/web only (allowedTools whitelist, comma-separated)
 #   edit = auto-accept file edits + common fs commands (acceptEdits) — no arbitrary Bash
-#   full = skip all prompts incl. Bash (bypassPermissions — the documented official flag)
-# Gotcha: in -p mode a tool that isn't pre-authed ABORTS the turn (no silent deny / no prompt).
+#   full = skip all prompts incl. Bash (bypassPermissions — the documented official flag);
+#          also the only level that gets --chrome (headless browser control), since write
+#          browser actions need bypassPermissions to clear the extension's consent gate.
+# Gotcha: in -p mode a built-in tool that isn't pre-authed ABORTS the turn (no prompt).
+#   MCP-server tools (e.g. Claude in Chrome) differ — a denied call returns an error
+#   result the model recovers from, and read-only MCP tools bypass the allowedTools
+#   whitelist — which is why --chrome is gated to "full" only (see run_claude).
 PERM_MODES = {
     "read": ["--allowedTools", "Read,Grep,Glob,WebFetch,WebSearch,TodoWrite"],
     "edit": ["--permission-mode", "acceptEdits"],
@@ -205,8 +210,14 @@ def run_claude(sid, text):
     if not first:
         heal_transcript(sid)   # safety net: a prior /stop may have left a half-written line
     sess = ["--session-id", sid] if first else ["--resume", sid]
+    # --chrome (the "Claude in Chrome" bridge) only for "full" sessions: it's the only
+    # level whose bypassPermissions can actually drive the browser headlessly. In
+    # read/edit, write browser actions hit the extension's own "requires permission"
+    # gate anyway, so we skip loading the 22 browser tools into their context (and the
+    # bridge-connect cost) — verified: --chrome works fine in headless `claude -p`.
+    chrome_flag = ["--chrome"] if owned.get("perm") == "full" else []
     cmd = [CLAUDE_BIN, "-p", text, *sess, "--add-dir", UPLOADS,
-           "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--chrome", *perm_flags]
+           "--output-format", "stream-json", "--include-partial-messages", "--verbose", *chrome_flag, *perm_flags]
     env = os.environ.copy()
     env["PATH"] = CHILD_PATH
     set_status(sid, state="thinking", started=time.time(), detail=None, tokens=0)
