@@ -100,6 +100,16 @@
   #content .turn.user h3 { color: var(--user); }
   #content .turn.user a { color: #f9c9ec; }
   #content .turn.assistant { padding-inline: 0; }   /* Claude: clean, no box/line — just spacing */
+  /* per-reply "copy all" button, shown at the bottom of each Claude turn */
+  #content .turn.assistant .copyall {
+    display: inline-flex; align-items: center; gap: 6px;
+    margin-top: 14px; padding: 5px 14px; font-size: 13px; font-weight: 600;
+    cursor: pointer; color: var(--accent);
+    background: rgba(137,180,250,.12);
+    border: 1px solid var(--accent); border-radius: 8px;
+    transition: background .15s, color .15s;
+  }
+  #content .turn.assistant .copyall:hover { background: var(--accent); color: var(--bg); }
   /* collapsible tool actions (Edit/Write/Bash) + outputs */
   #content details.tool {
     margin: 8px 0; border: 1px solid var(--border); border-radius: 8px;
@@ -1003,7 +1013,8 @@
         frag.appendChild(box);
         box.appendChild(el);
       } else if (el.tagName === 'HR') {
-        box = null;                 // separators are redundant now — drop them
+        // drop the separator but KEEP the current turn box — an <hr> inside a
+        // reply must not orphan the text after it (the next H3 opens a new turn).
       } else if (box) {
         box.appendChild(el);
       } else {
@@ -1012,6 +1023,29 @@
     });
     elContent.innerHTML = '';
     elContent.appendChild(frag);
+    // add a "copy whole reply" button to each of Claude's turns
+    elContent.querySelectorAll('.turn.assistant').forEach(addCopyAll);
+  }
+
+  // append a "copy all" button that copies the full text of Claude's reply
+  function addCopyAll(box) {
+    if (box.querySelector(':scope > .copyall')) return;   // already added
+    const btn = document.createElement('button');
+    btn.className = 'copyall';
+    btn.type = 'button';
+    btn.innerHTML = '📋 העתק הכל';
+    btn.onclick = () => {
+      // grab reply text without the "🤖 Claude" header or the button itself
+      const clone = box.cloneNode(true);
+      clone.querySelectorAll('h3, .copyall').forEach(n => n.remove());
+      clone.querySelectorAll('details').forEach(d => d.open = true);   // include collapsed tool blocks
+      const text = clone.innerText.replace(/\n{3,}/g, '\n\n').trim();
+      navigator.clipboard.writeText(text).then(() => {
+        btn.innerHTML = '✓ הועתק';
+        setTimeout(() => { btn.innerHTML = '📋 העתק הכל'; }, 1200);
+      }).catch(() => { btn.innerHTML = '✕ נכשל'; setTimeout(() => { btn.innerHTML = '📋 העתק הכל'; }, 1200); });
+    };
+    box.appendChild(btn);
   }
 
   function fmtTime(ts) {
