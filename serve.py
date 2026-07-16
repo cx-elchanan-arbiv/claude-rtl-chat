@@ -69,9 +69,9 @@ PERM_FROM_MODE = {"acceptEdits": "edit", "bypassPermissions": "full"}
 # "default" = no flag, i.e. let Claude Code use its own configured default. Only
 # browser-owned chats are switchable — a mirrored terminal session runs under whatever
 # model that terminal chose; we only read its transcript, so we can't set it.
-MODELS = {"default": [], "opus": ["--model", "opus"], "sonnet": ["--model", "sonnet"],
+MODELS = {"opus": ["--model", "opus"], "sonnet": ["--model", "sonnet"],
           "haiku": ["--model", "haiku"], "fable": ["--model", "fable"]}
-DEFAULT_MODEL = "default"
+DEFAULT_MODEL = "opus"   # also the fallback for any legacy chat whose stored model is gone
 
 os.chdir(BASE)
 sys.path.insert(0, BASE)

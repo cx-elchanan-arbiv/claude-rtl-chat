@@ -414,7 +414,6 @@
         <option value="full">⚡ כוח מלא</option>
       </select>
       <select id="modelSel" title="מודל לשיחה החדשה">
-        <option value="default">🧠 ברירת-מחדל</option>
         <option value="opus">🧠 Opus</option>
         <option value="sonnet">🧠 Sonnet</option>
         <option value="haiku">🧠 Haiku</option>
@@ -440,7 +439,6 @@
         <option value="full">⚡ כוח מלא</option>
       </select>
       <select id="modelLive" title="מודל לשיחה הנוכחית — משפיע על ההודעה הבאה">
-        <option value="default">🧠 ברירת-מחדל</option>
         <option value="opus">🧠 Opus</option>
         <option value="sonnet">🧠 Sonnet</option>
         <option value="haiku">🧠 Haiku</option>
@@ -685,7 +683,8 @@
   // model pickers — same shape as perm: header = new-chat default (localStorage),
   // compose = live for the CURRENT chat (POST /model, takes effect next message).
   const savedModel = localStorage.getItem('rtl-model');
-  if (savedModel) elModelSel.value = savedModel;
+  // guard: a legacy saved value like "default" no longer exists → keep Opus (first option)
+  if (savedModel && [...elModelSel.options].some(o => o.value === savedModel)) elModelSel.value = savedModel;
   elModelSel.onchange = () => localStorage.setItem('rtl-model', elModelSel.value);
   elModelLive.onchange = async () => {
     if (!selectedId) return;
@@ -1014,7 +1013,7 @@
       const p = ((window._owned || {})[sel.id] || {}).perm || 'read';
       if (elPermLive.value !== p) elPermLive.value = p;
       tintPerm(elPermLive);
-      const m = ((window._owned || {})[sel.id] || {}).model || 'default';
+      const m = ((window._owned || {})[sel.id] || {}).model || 'opus';
       if (elModelLive.value !== m) elModelLive.value = m;
       loadDraft(sel.id);   // restore this chat's saved draft (only when the chat changes)
     }
