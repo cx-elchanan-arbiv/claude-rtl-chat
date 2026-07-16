@@ -1211,8 +1211,11 @@
       elContent.appendChild(bubble);
     }
     const empty = elContent.querySelector('#empty'); if (empty) empty.remove();
+    // escape `<` so a literal tag Claude types mid-stream (e.g. `<code dir="ltr">`
+    // while discussing RTL) can't open a real element and swallow the rest of the
+    // bubble — same disarm extract.py applies to the stored transcript (md_text).
     bubble.innerHTML = '<h3>🤖 Claude</h3>' +
-      (window.marked ? marked.parse(partial) : '<div style="white-space:pre-wrap">' + esc(partial) + '</div>') +
+      (window.marked ? marked.parse(partial.replace(/</g, '&lt;')) : '<div style="white-space:pre-wrap">' + esc(partial) + '</div>') +
       '<span class="caret"></span>';
     if (atBottom) elWrap.scrollTop = elWrap.scrollHeight;
   }
@@ -1241,7 +1244,7 @@
       elContent.appendChild(b);
     }
     b.innerHTML = '<h3>🤖 Claude · <span class="intbadge">⚠️ התשובה נקטעה — לא נשמרה בתמלול</span></h3>' +
-      (window.marked ? marked.parse(txt) : '<div style="white-space:pre-wrap">' + esc(txt) + '</div>') +
+      (window.marked ? marked.parse(txt.replace(/</g, '&lt;')) : '<div style="white-space:pre-wrap">' + esc(txt) + '</div>') +
       '<div class="intactions"><button class="intDismiss">סגור הודעה זו</button></div>';
     b.querySelector('.intDismiss').onclick = async () => {
       b.remove();

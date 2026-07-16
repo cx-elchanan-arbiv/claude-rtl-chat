@@ -113,6 +113,16 @@ def esc(s):
     return html.escape(str(s))
 
 
+def md_text(s):
+    """Neutralize raw HTML written INSIDE conversation prose, so a literal tag typed
+    in the text (e.g. Claude explaining `<code dir="ltr">` while discussing RTL) can't
+    open a real DOM element and swallow the rest of the page. Escaping only `<` keeps
+    all Markdown intact (**bold**, lists, `code`, #headers) while disarming every tag
+    (no `<` → no tag). extract's OWN structural html (headers, tool <details>) is added
+    separately and stays live — this touches only the untrusted message text."""
+    return str(s).replace("<", "&lt;")
+
+
 def details(summary_html, body, cls="tool", is_open=False):
     # collapse to ONE physical line (encode newlines) so a blank line inside a
     # diff can't make marked terminate the HTML block early; <pre> + &#10; still
@@ -195,7 +205,7 @@ def render_assistant(content):
             continue
         if blk.get("type") == "text" and blk.get("text"):
             t = blk["text"].strip()
-            out.append(NO_REPLY_HTML if t == NO_REPLY_TEXT else t)
+            out.append(NO_REPLY_HTML if t == NO_REPLY_TEXT else md_text(t))
         elif blk.get("type") == "tool_use":
             summ, body, is_open, cls = summarize_tool(blk.get("name", ""), blk.get("input", {}) or {})
             out.append(details(summ, body, cls=cls, is_open=is_open))
@@ -260,7 +270,7 @@ def render(path):
             else:
                 text, results = split_user(content)
                 if text:
-                    clean = IMG_MARK.sub("🖼️", text)
+                    clean = IMG_MARK.sub("🖼️", md_text(text))
                     if speaker != "user":
                         parts.append(header("user"))
                         speaker = "user"
