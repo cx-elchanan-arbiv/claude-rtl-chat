@@ -345,6 +345,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if p == "/status":
             with _status_lock:
                 return self._json(200, dict(_status))
+        if p == "/interrupted":
+            # crashed-reply text for a chat, polled every tick. Serve it via an endpoint
+            # that ALWAYS returns 200 (empty when there's no file) instead of letting the
+            # browser fetch a usually-absent static file and spam the console with 404s.
+            from urllib.parse import parse_qs, urlparse
+            sid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
+            text = ""
+            if sid:
+                try:
+                    with open(interrupted_path(sid), encoding="utf-8") as fh:
+                        text = fh.read()
+                except OSError:
+                    text = ""
+            body = text.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self._cors()
+            self.end_headers()
+            return self.wfile.write(body)
         return super().do_GET()
 
     def do_POST(self):

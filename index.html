@@ -1264,7 +1264,9 @@
     interruptedBusy = true;
     let txt = '';
     try {
-      const r = await fetch('s-' + sel.id + '.interrupted?t=' + Date.now(), { cache: 'no-store' });
+      // via /interrupted (always 200, empty when absent) — not the static file, whose
+      // 404 on every idle tick spammed the console.
+      const r = await fetch('/interrupted?id=' + sel.id + '&t=' + Date.now(), { cache: 'no-store' });
       if (r.ok) txt = (await r.text() || '').trim();
     } catch (e) { interruptedBusy = false; return; }
     interruptedBusy = false;
