@@ -77,7 +77,29 @@ def test_normal_markdown_still_works():
         "md_text must leave Markdown untouched — only `<` is escaped"
 
 
+def test_content_heading_is_not_a_turn_boundary():
+    # a `### heading` Claude writes INSIDE a reply must not be counted as a new turn
+    # (it used to: the renderer sniffed every <h3>). Only extract's own role headers count.
+    path = _write_jsonl([
+        _user("שאלה"),
+        _assistant("פתיח.\n\n### דעתי\nגוף.\n\n### מה שנראתה לי\nעוד גוף."),  # 2 content headings
+    ])
+    try:
+        md, turns, *_ = extract.render(path)
+    finally:
+        os.remove(path)
+    # exactly 2 real turns (1 user + 1 assistant) — the 2 content ### headings don't add turns
+    assert turns == 2, f"content headings inflated the turn count: got {turns}, expected 2"
+    assert md.count('<h3 data-role=') == 2, "should be exactly 2 role-tagged turn headers"
+    # content headings stay as Markdown `###` (marked renders them to plain <h3> in the
+    # browser; decorateTurns ignores them). The "נראתה" one (contains substring אתה) must
+    # NOT have become a role header — the old text-sniff would have made it a user bubble.
+    assert "### דעתי" in md and "### מה שנראתה לי" in md, \
+        "content ### headings must remain Markdown, not be turned into role headers"
+
+
 if __name__ == "__main__":
     test_unclosed_tag_is_neutralized()
     test_normal_markdown_still_works()
-    print("✓ all passed — html-injection swallow bug stays fixed")
+    test_content_heading_is_not_a_turn_boundary()
+    print("✓ all passed — html-injection swallow bug + turn-boundary integrity hold")

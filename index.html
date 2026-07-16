@@ -1038,10 +1038,11 @@
     const frag = document.createDocumentFragment();
     let box = null;
     kids.forEach(el => {
-      if (el.tagName === 'H3') {
-        const isUser = el.textContent.indexOf('אתה') !== -1;
+      if (el.tagName === 'H3' && el.dataset.role) {
+        // only extract's own role-tagged headers open a turn; a plain <h3> from a
+        // `### heading` Claude wrote stays inline content of the current turn.
         box = document.createElement('div');
-        box.className = 'turn ' + (isUser ? 'user' : 'assistant');
+        box.className = 'turn ' + (el.dataset.role === 'user' ? 'user' : 'assistant');
         frag.appendChild(box);
         box.appendChild(el);
       } else if (el.tagName === 'HR') {

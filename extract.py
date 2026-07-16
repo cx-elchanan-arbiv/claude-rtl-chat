@@ -237,7 +237,13 @@ def render(path):
     speaker = None  # 'user' | 'assistant'
 
     def header(role):
-        return "### 🧑 אתה" if role == "user" else "### 🤖 Claude"
+        # raw <h3> with an explicit data-role so the renderer keys on THIS, not on a
+        # text sniff — Claude's own `### heading` inside a reply then stays inline
+        # content instead of being mistaken for a turn boundary, and a heading that
+        # merely contains the substring "אתה" (e.g. "נראתה") can't become a fake user
+        # bubble. This is extract's own trusted html, added outside the escaped text.
+        return ('<h3 data-role="user">🧑 אתה</h3>' if role == "user"
+                else '<h3 data-role="assistant">🤖 Claude</h3>')
 
     with open(path, encoding="utf-8") as fh:
         for line in fh:
@@ -284,7 +290,7 @@ def render(path):
                         parts.append(details("↳ פלט", r[:MAX_RESULT_CHARS], cls="tool result"))
 
     md = "\n\n".join(parts) if parts else "*ממתין לתשובה הראשונה…*"
-    turns = sum(1 for p in parts if p.startswith("### "))
+    turns = sum(1 for p in parts if p.startswith('<h3 data-role='))
     clean = IMG_MARK.sub("", last_user)
     snippet = " ".join(clean.split())[:40] or "(תמונה)"
     ftitle = " ".join(IMG_MARK.sub("", first_user).split())[:38] or "(תמונה)"
