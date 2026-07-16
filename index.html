@@ -1033,31 +1033,60 @@
   }
 
   // group flat rendered output into per-turn boxes (h3 header starts a turn)
-  function decorateTurns() {
-    const kids = Array.from(elContent.children);
+  // ---- incremental turn rendering (C+D) ----------------------------------
+  // Re-parsing the whole md (up to several MB) and rebuilding all DOM on every 1s tick
+  // froze the page and wiped live overlays (#optimistic → the send flicker). Instead we
+  // split the md into per-turn segments — each begins with a <h3 data-role> marker (from
+  // the role-tagged headers) — and only (re)build the turns that changed. In a growing
+  // session that's just the last turn plus any new ones; stable history is never touched,
+  // so its scroll position, open tool-blocks and DOM identity all survive untouched.
+  let renderedSegs = [];      // raw segment strings currently in the DOM
+  let renderedFor = null;     // session id those segments belong to
+
+  function splitSegments(md) {
+    // each piece starts at a role header; anything before the first is a preamble piece
+    return md.split(/(?=<h3 data-role=)/).filter(s => s.length);
+  }
+
+  function buildTurnBox(seg) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = marked.parse(seg);
+    const head = Array.from(tmp.children).find(el => el.tagName === 'H3' && el.dataset.role);
+    const box = document.createElement('div');
+    box.className = 'turn seg ' + (head && head.dataset.role === 'user' ? 'user' : 'assistant');
+    // drop top-level <hr> (an <hr> must not orphan following text out of the box)
+    Array.from(tmp.children).forEach(el => { if (el.tagName !== 'HR') box.appendChild(el); });
+    if (box.classList.contains('assistant')) addCopyAll(box);
+    return box;
+  }
+
+  function renderTurns(md, sameSession, sel) {
+    if (!window.marked) {   // no markdown lib → dumb but safe fallback (whole thing escaped)
+      elContent.innerHTML = '<pre>' + md.replace(/</g, '&lt;') + '</pre>';
+      renderedSegs = []; renderedFor = null;
+      return;
+    }
+    const segs = splitSegments(md);
+    if (!sameSession || renderedFor !== sel.id) {           // fresh session → full build (rare)
+      const frag = document.createDocumentFragment();
+      segs.forEach(s => frag.appendChild(buildTurnBox(s)));
+      elContent.innerHTML = '';
+      elContent.appendChild(frag);
+      renderedSegs = segs.slice(); renderedFor = sel.id;
+      return;
+    }
+    // same session: keep the unchanged leading segments, rebuild only from the first diff
+    let p = 0;
+    while (p < segs.length && p < renderedSegs.length && segs[p] === renderedSegs[p]) p++;
+    if (segs.length > renderedSegs.length) removeOptimistic();   // a real turn landed → drop the local echo
+    const boxes = Array.from(elContent.querySelectorAll(':scope > .turn.seg'));
+    for (let i = boxes.length - 1; i >= p; i--) boxes[i].remove();
     const frag = document.createDocumentFragment();
-    let box = null;
-    kids.forEach(el => {
-      if (el.tagName === 'H3' && el.dataset.role) {
-        // only extract's own role-tagged headers open a turn; a plain <h3> from a
-        // `### heading` Claude wrote stays inline content of the current turn.
-        box = document.createElement('div');
-        box.className = 'turn ' + (el.dataset.role === 'user' ? 'user' : 'assistant');
-        frag.appendChild(box);
-        box.appendChild(el);
-      } else if (el.tagName === 'HR') {
-        // drop the separator but KEEP the current turn box — an <hr> inside a
-        // reply must not orphan the text after it (the next H3 opens a new turn).
-      } else if (box) {
-        box.appendChild(el);
-      } else {
-        frag.appendChild(el);
-      }
-    });
-    elContent.innerHTML = '';
-    elContent.appendChild(frag);
-    // add a "copy whole reply" button to each of Claude's turns
-    elContent.querySelectorAll('.turn.assistant').forEach(addCopyAll);
+    for (let i = p; i < segs.length; i++) frag.appendChild(buildTurnBox(segs[i]));
+    // keep the live overlays (#optimistic/#streaming/#interrupted) at the very end
+    const overlay = elContent.querySelector('#optimistic, #streaming, #interrupted');
+    if (overlay) elContent.insertBefore(frag, overlay); else elContent.appendChild(frag);
+    renderedSegs = segs.slice();
   }
 
   // append a "copy all" button that copies the full text of Claude's reply
@@ -1156,17 +1185,9 @@
       const prevTop = elWrap.scrollTop;
       const atBottom = (elWrap.scrollTop + elWrap.clientHeight) >= (elWrap.scrollHeight - 90);
       lastMd = md; lastSelected = sel.id;
-      // remember which tool blocks were open (same session only) so a 1s refresh
-      // doesn't collapse what you're reading
-      let openIdx = null;
-      if (sameSession) {
-        openIdx = new Set();
-        elContent.querySelectorAll('details.tool').forEach((d, i) => { if (d.open) openIdx.add(i); });
-      }
-      elContent.innerHTML = window.marked ? marked.parse(md)
-                                          : '<pre>' + md.replace(/</g, '&lt;') + '</pre>';
-      if (window.marked) decorateTurns();
-      if (openIdx) elContent.querySelectorAll('details.tool').forEach((d, i) => { if (openIdx.has(i)) d.open = true; });
+      // incremental: only the changed/new turns are rebuilt, so open tool-blocks in the
+      // stable history keep their state automatically (no save/restore-by-index needed).
+      renderTurns(md, sameSession, sel);
       if (sameSession) {
         elWrap.scrollTop = atBottom ? elWrap.scrollHeight : prevTop;   // follow the bottom, else stay where you were
       } else {
