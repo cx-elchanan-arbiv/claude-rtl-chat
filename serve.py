@@ -64,6 +64,15 @@ DEFAULT_PERM = "read"
 # onto our 3 levels (default/plan and anything unknown → the safe "read").
 PERM_FROM_MODE = {"acceptEdits": "edit", "bypassPermissions": "full"}
 
+# Model per browser-run chat (stored per-session in owned.json), mirroring perm.
+# Aliases track the latest of each tier (`claude --help`: --model accepts an alias);
+# "default" = no flag, i.e. let Claude Code use its own configured default. Only
+# browser-owned chats are switchable — a mirrored terminal session runs under whatever
+# model that terminal chose; we only read its transcript, so we can't set it.
+MODELS = {"default": [], "opus": ["--model", "opus"], "sonnet": ["--model", "sonnet"],
+          "haiku": ["--model", "haiku"], "fable": ["--model", "fable"]}
+DEFAULT_MODEL = "default"
+
 os.chdir(BASE)
 sys.path.insert(0, BASE)
 import extract  # noqa: E402
@@ -216,8 +225,10 @@ def run_claude(sid, text):
     # gate anyway, so we skip loading the 22 browser tools into their context (and the
     # bridge-connect cost) — verified: --chrome works fine in headless `claude -p`.
     chrome_flag = ["--chrome"] if owned.get("perm") == "full" else []
+    model_flags = MODELS.get(owned.get("model"), MODELS[DEFAULT_MODEL])   # per-chat model; built each turn → live switch
     cmd = [CLAUDE_BIN, "-p", text, *sess, "--add-dir", UPLOADS,
-           "--output-format", "stream-json", "--include-partial-messages", "--verbose", *chrome_flag, *perm_flags]
+           "--output-format", "stream-json", "--include-partial-messages", "--verbose",
+           *model_flags, *chrome_flag, *perm_flags]
     env = os.environ.copy()
     env["PATH"] = CHILD_PATH
     set_status(sid, state="thinking", started=time.time(), detail=None, tokens=0)
@@ -351,9 +362,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             perm = body.get("perm")
             if perm not in PERM_MODES:
                 perm = DEFAULT_PERM
+            model = body.get("model")
+            if model not in MODELS:
+                model = DEFAULT_MODEL
             with _owned_lock:
                 d = read_owned()
-                d[sid] = {"created": int(time.time()), "title": "שיחה חדשה", "cwd": cwd, "perm": perm}
+                d[sid] = {"created": int(time.time()), "title": "שיחה חדשה",
+                          "cwd": cwd, "perm": perm, "model": model}
                 write_owned(d)
             try:
                 extract.main()   # surface the placeholder immediately (no 1s wait)
@@ -373,6 +388,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 d[sid]["perm"] = perm
                 write_owned(d)
             return self._json(200, {"status": "ok", "perm": perm})
+
+        if self.path == "/model":                  # switch a chat's model mid-conversation
+            sid = body.get("id")
+            model = body.get("model")
+            if model not in MODELS:
+                return self._json(400, {"error": "bad model"})
+            with _owned_lock:
+                d = read_owned()
+                if sid not in d:                  # only browser-owned chats are switchable
+                    return self._json(403, {"error": "not an owned session"})
+                d[sid]["model"] = model
+                write_owned(d)
+            return self._json(200, {"status": "ok", "model": model})
 
         if self.path == "/adopt":                  # take over a terminal-started session
             sid = body.get("id")

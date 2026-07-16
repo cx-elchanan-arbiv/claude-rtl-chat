@@ -413,6 +413,13 @@
         <option value="edit">✏️ עריכות</option>
         <option value="full">⚡ כוח מלא</option>
       </select>
+      <select id="modelSel" title="מודל לשיחה החדשה">
+        <option value="default">🧠 ברירת-מחדל</option>
+        <option value="opus">🧠 Opus</option>
+        <option value="sonnet">🧠 Sonnet</option>
+        <option value="haiku">🧠 Haiku</option>
+        <option value="fable">🧠 Fable</option>
+      </select>
       <span id="histBtn" style="display:none"></span>
     </div>
     <div id="tabStrip">
@@ -431,6 +438,13 @@
         <option value="read">🔒 קריאה</option>
         <option value="edit">✏️ עריכות</option>
         <option value="full">⚡ כוח מלא</option>
+      </select>
+      <select id="modelLive" title="מודל לשיחה הנוכחית — משפיע על ההודעה הבאה">
+        <option value="default">🧠 ברירת-מחדל</option>
+        <option value="opus">🧠 Opus</option>
+        <option value="sonnet">🧠 Sonnet</option>
+        <option value="haiku">🧠 Haiku</option>
+        <option value="fable">🧠 Fable</option>
       </select>
       <button id="attachBtn" title="צרף קובץ או תמונה">📎</button>
       <button id="kbfixInline" title="המר את הטקסט בתיבה מאנגלית-בטעות לעברית (אם יש בחירה — רק החלק המסומן)">⌨️→</button>
@@ -491,6 +505,8 @@
   const elDirSel = document.getElementById('dirSel');
   const elPermSel = document.getElementById('permSel');
   const elPermLive = document.getElementById('permLive');
+  const elModelSel = document.getElementById('modelSel');
+  const elModelLive = document.getElementById('modelLive');
   const elAttach = document.getElementById('attachBtn');
   const elFile = document.getElementById('fileInput');
   const elChips = document.getElementById('chips');
@@ -666,6 +682,21 @@
     } catch (e) { /* ignore — next tick re-syncs from owned.json */ }
   };
 
+  // model pickers — same shape as perm: header = new-chat default (localStorage),
+  // compose = live for the CURRENT chat (POST /model, takes effect next message).
+  const savedModel = localStorage.getItem('rtl-model');
+  if (savedModel) elModelSel.value = savedModel;
+  elModelSel.onchange = () => localStorage.setItem('rtl-model', elModelSel.value);
+  elModelLive.onchange = async () => {
+    if (!selectedId) return;
+    try {
+      await fetch('/model', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: selectedId, model: elModelLive.value })
+      });
+    } catch (e) { /* ignore — next tick re-syncs from owned.json */ }
+  };
+
   function renderChips() {
     elChips.innerHTML = pendingFiles.map((f, i) =>
       '<span class="chip">' + (f.thumb ? '<img src="' + f.thumb + '">' : '📎') +
@@ -820,7 +851,7 @@
     try {
       const res = await fetch('/new', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cwd: elDirSel.value || undefined, perm: elPermSel.value })
+        body: JSON.stringify({ cwd: elDirSel.value || undefined, perm: elPermSel.value, model: elModelSel.value })
       });
       const d = await res.json();
       if (d.id) {
@@ -983,6 +1014,8 @@
       const p = ((window._owned || {})[sel.id] || {}).perm || 'read';
       if (elPermLive.value !== p) elPermLive.value = p;
       tintPerm(elPermLive);
+      const m = ((window._owned || {})[sel.id] || {}).model || 'default';
+      if (elModelLive.value !== m) elModelLive.value = m;
       loadDraft(sel.id);   // restore this chat's saved draft (only when the chat changes)
     }
     updateSendState();
