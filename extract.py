@@ -16,6 +16,8 @@ import json
 import os
 import re
 import subprocess
+import tempfile
+import threading
 import time
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -306,13 +308,36 @@ def load_cache():
 
 
 def write_atomic(path, text):
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(text)
-    os.replace(tmp, path)
+    # unique temp name in the SAME dir (os.replace is atomic only within a filesystem).
+    # A fixed "<path>.tmp" was racy: main() is called from serve.py's 1s loop AND its
+    # /new,/adopt,/close handler threads, so two concurrent writers to the same .tmp
+    # could truncate each other and publish a half-written file. mkstemp gives each its own.
+    d = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".wtmp-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+_main_lock = threading.Lock()   # serialize whole-scan runs (1s loop + handler-triggered)
 
 
 def main():
+    # one whole-scan at a time — serve.py fires this from its 1s loop and from the
+    # /new,/adopt,/close handlers concurrently; without this they'd race on the shared
+    # sessions.json / _cache.json writes (and redo the same work).
+    with _main_lock:
+        _run()
+
+
+def _run():
     now = time.time()
     files = glob.glob(os.path.join(PROJECTS, "*", "*.jsonl"))
     files = [f for f in files if now - os.path.getmtime(f) <= HISTORY_SECONDS]
@@ -333,13 +358,15 @@ def main():
 
     for path in files:
         sid = os.path.splitext(os.path.basename(path))[0]
-        mt = int(os.path.getmtime(path))
+        st = os.stat(path)
+        mt = int(st.st_mtime)                       # whole seconds — display / sort / active window
+        sig = f"{st.st_mtime_ns}:{st.st_size}"      # precise change key: catches sub-second writes
         mdname = f"s-{sid}.md"
         mdpath = os.path.join(BASE, mdname)
         keep.add(mdname)
 
         c = cache.get(sid)
-        if c and c.get("mtime") == mt and os.path.exists(mdpath) and "title" in c:
+        if c and c.get("sig") == sig and os.path.exists(mdpath) and "title" in c:
             snippet, turns = c["snippet"], c["turns"]
             tokens, out, title = c["tokens"], c.get("out", 0), c["title"]
         else:
@@ -365,7 +392,7 @@ def main():
         if sid in owned:
             is_active = True   # browser chats stay "open" even when no process runs
 
-        new_cache[sid] = {"mtime": mt, "snippet": snippet, "turns": turns,
+        new_cache[sid] = {"sig": sig, "mtime": mt, "snippet": snippet, "turns": turns,
                           "tokens": tokens, "out": out, "title": title}
         seen_ids.add(sid)
         sessions.append({

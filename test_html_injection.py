@@ -98,8 +98,40 @@ def test_content_heading_is_not_a_turn_boundary():
         "content ### headings must remain Markdown, not be turned into role headers"
 
 
+def test_write_atomic_survives_concurrent_writers():
+    # the race: main() is fired from serve.py's 1s loop AND its handler threads, so
+    # write_atomic can be called for the same path from several threads at once. A fixed
+    # ".tmp" name let them clobber each other and publish a truncated file. With a unique
+    # temp per writer the published file must always be ONE writer's complete content.
+    import threading as _t
+    d = tempfile.mkdtemp()
+    target = os.path.join(d, "s-race.md")
+    payloads = [str(i) * 5000 for i in range(1, 9)]   # distinct, each internally uniform
+    barrier = _t.Barrier(len(payloads))
+
+    def writer(p):
+        barrier.wait()                                 # maximise overlap
+        extract.write_atomic(target, p)
+
+    threads = [_t.Thread(target=writer, args=(p,)) for p in payloads]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    final = open(target, encoding="utf-8").read()
+    leftovers = [f for f in os.listdir(d) if f.startswith(".wtmp-")]
+    import shutil
+    shutil.rmtree(d, ignore_errors=True)
+
+    assert final in payloads, "published file is truncated/mixed — not any single writer's content"
+    assert len(set(final)) == 1, "content is interleaved from multiple writers (corruption)"
+    assert not leftovers, f"temp files left behind: {leftovers}"
+
+
 if __name__ == "__main__":
     test_unclosed_tag_is_neutralized()
     test_normal_markdown_still_works()
     test_content_heading_is_not_a_turn_boundary()
-    print("✓ all passed — html-injection swallow bug + turn-boundary integrity hold")
+    test_write_atomic_survives_concurrent_writers()
+    print("✓ all passed — swallow bug + turn-boundary + atomic-write race all hold")
