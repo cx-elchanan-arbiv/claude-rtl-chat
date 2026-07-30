@@ -226,7 +226,13 @@ def run_claude(sid, text):
     # bridge-connect cost) — verified: --chrome works fine in headless `claude -p`.
     chrome_flag = ["--chrome"] if owned.get("perm") == "full" else []
     model_flags = MODELS.get(owned.get("model"), MODELS[DEFAULT_MODEL])   # per-chat model; built each turn → live switch
+    # Marker so the model can reliably tell "this turn came via the web UI" (any cwd)
+    # vs. a terminal/other invocation of the same session, which won't carry this flag.
+    runtime_marker = ("[runtime] הבקשה הזו הגיעה דרך claude-rtl-chat — "
+                      "ממשק הווב המקומי של אלחנן (serve.py, פורט 7778). "
+                      "בקשות מהטרמינל או מכל מקור אחר לא נושאות את השורה הזו.")
     cmd = [CLAUDE_BIN, "-p", text, *sess, "--add-dir", UPLOADS,
+           "--append-system-prompt", runtime_marker,
            "--output-format", "stream-json", "--include-partial-messages", "--verbose",
            *model_flags, *chrome_flag, *perm_flags]
     env = os.environ.copy()
