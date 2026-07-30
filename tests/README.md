@@ -21,6 +21,8 @@ its naming convention. `tests/run.py` is the fallback that always works.
 | `test_rich_copy.py` | `tableToMd()` — copying a rendered table without losing the table |
 | `test_uploads_sweep.py` | `sweep_uploads()` — the only code here that deletes user files |
 | `test_html_injection.py` | The "one literal `<tag>` swallows the page" bug, turn-boundary detection, and the atomic-write race |
+| `test_extract_index.py` | The session index: real-activity time vs. the file's mtime, `origin`, the `bg` flag, and liveness that ignores the daemon's plumbing |
+| `test_view_filter.py` | `actAt()` / `isWeb()` / `inView()` / `originNote()` — the tab-strip view filter's whole rule set |
 
 Each test file opens with the bug it exists to prevent. Read that header before
 changing the code it covers — most of these guard against a specific failure that

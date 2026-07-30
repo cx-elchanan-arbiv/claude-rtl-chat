@@ -33,8 +33,14 @@
   #workState { font-weight: 600; padding: 2px 11px; border-radius: 12px; font-size: 12.5px; white-space: nowrap; }
   #workState.work { color: #f9e2af; background: rgba(249,226,175,.14); }
   #workState.ready { color: var(--new); background: rgba(166,227,161,.13); }
+  /* which chats the strip shows: everything / only ours / only the terminal's */
+  #viewSel {
+    margin-inline-start: auto; background: var(--bg); color: var(--muted);
+    border: 1px solid var(--border); border-radius: 7px; padding: 3px 8px; font-size: 12px;
+  }
+  #viewSel.filtered { color: var(--fg); border-color: var(--accent); }   /* not showing all */
   #histBtn {
-    margin-inline-start: auto; cursor: pointer; user-select: none;
+    cursor: pointer; user-select: none;
     border: 1px solid var(--border); border-radius: 7px; padding: 3px 10px;
     color: var(--muted); background: var(--bg); font-size: 12px;
   }
@@ -504,6 +510,11 @@
         <option value="haiku">🧠 Haiku</option>
         <option value="fable">🧠 Fable</option>
       </select>
+      <select id="viewSel" title="אילו שיחות להציג בשורת הטאבים">
+        <option value="all">🗂️ הכל</option>
+        <option value="web">💻 מהדפדפן</option>
+        <option value="terminal">⌨️ מהטרמינל</option>
+      </select>
       <span id="histBtn" style="display:none"></span>
     </div>
     <div id="tabStrip">
@@ -640,6 +651,7 @@
   const elDot = document.getElementById('dot');
   const elStatus = document.getElementById('status');
   const elHist = document.getElementById('histBtn');
+  const elViewSel = document.getElementById('viewSel');
   const elFootTok = document.getElementById('foot-tok');
   const elFootMax = document.getElementById('foot-max');
   const elNew = document.getElementById('newBtn');
@@ -930,7 +942,10 @@
   let selectedId = _urlId || localStorage.getItem('rtl-selected') || null;
   if (_urlId) localStorage.setItem('rtl-selected', _urlId);
   let showHistory = localStorage.getItem('rtl-hist') === '1';
-  let seenMtime = {};
+  // which chats the strip shows: 'all' | 'web' (opened here) | 'terminal' (mirrored).
+  // Purely a view filter — nothing is closed, stopped or hidden from the server.
+  let viewMode = localStorage.getItem('rtl-viewmode') || 'all';
+  let seenAt = {};                 // id -> last real-activity time we've already shown
   let tabOrder = [];               // stable tab order (ids) — so a message never reshuffles tabs
   try { tabOrder = JSON.parse(localStorage.getItem('rtl-taborder') || '[]') || []; } catch (e) {}
   let prevStatusIds = new Set();   // ids that were running last tick (to detect a finish)
@@ -964,6 +979,27 @@
   elHist.onclick = () => {
     showHistory = !showHistory;
     localStorage.setItem('rtl-hist', showHistory ? '1' : '0');
+  };
+
+  // ---- view filter: everything / only chats opened here / only mirrored terminal ones ----
+  elViewSel.value = viewMode;
+  function paintViewSel() { elViewSel.classList.toggle('filtered', viewMode !== 'all'); }
+  paintViewSel();
+  elViewSel.onchange = () => {
+    viewMode = elViewSel.value;
+    localStorage.setItem('rtl-viewmode', viewMode);
+    paintViewSel();
+    // an explicit switch is the ONE place allowed to move you: if the chat you're on isn't
+    // in the new view, land on the first one that is (ticks leave the selection alone).
+    const all = (window._active || []).concat(window._history || []);
+    const sel = all.find(s => s.id === selectedId);
+    const next = all.find(inView);
+    if (sel && !inView(sel) && next) {
+      selectedId = next.id;
+      localStorage.setItem('rtl-selected', selectedId);
+      lastMd = null; lastSelected = null;      // force a re-render of the new chat
+    }
+    tick();
   };
 
   // ---- adopt: take ownership of a terminal-started (read-only) session ----
@@ -1300,6 +1336,21 @@
   function tabName(s) {
     return localStorage.getItem('rtl-name-' + s.id) || s.title || s.project;
   }
+  // when this chat last actually SAID something. extract sends `last` for exactly this;
+  // s.mtime is the file's, which a daemon re-claim bumps on conversations that ended
+  // weeks ago (|| keeps an index written by an older serve.py working).
+  function actAt(s) { return s.last || s.mtime; }
+  // where the chat came from — 'web' = opened here, 'terminal' = mirrored, 'mixed' = a
+  // terminal session we adopted. Owned counts as ours: you can write to it.
+  function isWeb(s) { return !!(s.owned || s.origin === 'web' || s.origin === 'mixed'); }
+  function inView(s) {
+    return viewMode === 'all' || (viewMode === 'web' ? isWeb(s) : !isWeb(s));
+  }
+  function originNote(s) {
+    if (s.origin === 'web') return 'נפתח בדפדפן';
+    if (s.origin === 'mixed') return 'התחיל בטרמינל, אומץ לדפדפן';
+    return s.bg ? 'job שהטרמינל הריץ ברקע' : 'נפתח בטרמינל';
+  }
 
   function makeTab(s, isHist) {
     const tab = document.createElement('div');
@@ -1307,13 +1358,14 @@
       (s.owned ? ' owned' : '') + (statusMap[s.id] ? ' busy' : '') +
       (doneTabs[s.id] && s.id !== selectedId ? ' finished' : '');
     tab.dataset.id = s.id;
-    const changed = seenMtime[s.id] !== undefined && s.mtime > seenMtime[s.id];
+    const changed = seenAt[s.id] !== undefined && actAt(s) > seenAt[s.id];
     if (changed && s.id !== selectedId) tab.classList.add('haschange');
     tab.innerHTML = '<span class="ping"></span><span class="donecheck">✓</span>' +
       (s.owned ? '<span class="close" title="סגור שיחה (תעבור להיסטוריה)">✕</span>' : '') +
       '<span class="name">' + esc(tabName(s)) + '</span>' +
-      '<span class="sub">' + esc(s.project) + ' · ' + fmtTime(s.mtime) + '</span>';
-    tab.title = 'דאבל-קליק לשינוי שם · ' + esc(s.short);
+      '<span class="sub">' + (s.bg ? '⚙︎ job · ' : '') + esc(s.project) +
+      ' · ' + fmtTime(actAt(s)) + '</span>';
+    tab.title = 'דאבל-קליק לשינוי שם · ' + esc(s.short) + ' · ' + originNote(s);
     const closeEl = tab.querySelector('.close');
     if (closeEl) closeEl.onclick = (e) => {
       e.stopPropagation();
@@ -1326,7 +1378,7 @@
       selectedId = s.id;
       delete doneTabs[s.id];                // opening the tab clears its "finished" ✓
       localStorage.setItem('rtl-selected', selectedId);
-      seenMtime[s.id] = s.mtime;
+      seenAt[s.id] = actAt(s);
       lastMd = null; lastSelected = null;   // force re-render of new tab
     };
     tab.ondblclick = (e) => {
@@ -1341,10 +1393,16 @@
     return tab;
   }
 
+  // History is a MODE, not an append: clicking היסטוריה shows the history strip ON ITS OWN
+  // instead of stacking it after the open tabs, which used to bury both in one unreadable
+  // row. The chat you're reading always keeps its tab, even when it belongs to the strip
+  // that isn't showing — so you can never end up looking at a conversation with no tab.
   function renderTabs(active, history) {
     elTabs.innerHTML = '';
-    active.forEach(s => elTabs.appendChild(makeTab(s, false)));
-    if (showHistory) history.forEach(s => elTabs.appendChild(makeTab(s, true)));
+    const histIds = new Set(history.map(s => s.id));
+    const shown = showHistory ? history : active;
+    const pinned = (showHistory ? active : history).filter(s => s.id === selectedId);
+    pinned.concat(shown).forEach(s => elTabs.appendChild(makeTab(s, histIds.has(s.id))));
     requestAnimationFrame(updateTabArrows);   // refresh ‹ › arrow visibility for the new tab set
   }
 
@@ -1533,19 +1591,31 @@
       const sessions = data.sessions || [];
       let active = sessions.filter(s => s.active);
       let history = sessions.filter(s => !s.active);
-      ({ active, history } = applyStableOrder(active, history));   // keep tabs in a fixed order
+      // stable order FIRST, on the UNFILTERED lists: applyStableOrder prunes ids it can't
+      // see, so filtering before it would drop every hidden tab's saved slot and reshuffle
+      // them the moment you switch back.
+      ({ active, history } = applyStableOrder(active, history));
+      // ...then the view filter. The chat you're reading is never filtered out from under
+      // you: an explicit mode change re-selects (elViewSel.onchange), a tick never does.
+      const keep = s => inView(s) || s.id === selectedId;
+      active = active.filter(keep);
+      history = history.filter(keep);
       window._active = active; window._history = history;   // for instant re-render on rename
       elDot.classList.add('live');
       elStatus.textContent = 'חי · ' + active.length + ' פעיל' + (active.length === 1 ? '' : 'ים') +
-        ' · מתעדכן אוטומטית';
+        (viewMode === 'all' ? '' : ' · מסונן') + ' · מתעדכן אוטומטית';
       elHist.style.display = history.length ? 'inline-block' : 'none';
       elHist.className = showHistory ? 'on' : '';
       elHist.textContent = (showHistory ? '▾ ' : '▸ ') + 'היסטוריה (' + history.length + ')';
 
-      sessions.forEach(s => { if (seenMtime[s.id] === undefined) seenMtime[s.id] = s.mtime; });
-      const pool = showHistory ? sessions : (active.length ? active : sessions);
-      // don't reset away from a chat we just created (it may not be in the index yet)
-      if (!selectedId || (!pool.some(s => s.id === selectedId) && selectedId !== pendingId)) {
+      sessions.forEach(s => { if (seenAt[s.id] === undefined) seenAt[s.id] = actAt(s); });
+      // candidates if the selection vanished: whatever strip is on screen, else anything.
+      const shown = showHistory ? history : active;
+      const pool = shown.length ? shown : active.concat(history);
+      // only re-select when the chat is really GONE from the index — being hidden by the
+      // history toggle or the view filter must not move you (and don't reset away from a
+      // chat we just created, which may not be in the index yet).
+      if (!selectedId || (!sessions.some(s => s.id === selectedId) && selectedId !== pendingId)) {
         selectedId = pool.length ? pool[0].id : null;
       }
       if (pendingId && sessions.some(s => s.id === pendingId)) pendingId = null;  // it landed
@@ -1561,7 +1631,7 @@
       updateDocTitle();
       updateWorkState();
       if (sel) {
-        seenMtime[sel.id] = sel.mtime;
+        seenAt[sel.id] = actAt(sel);
         elFootTok.textContent = '🔤 ' + fmtTok(sel.tokens) + ' טוקנים · ' + fmtTok(sel.out) + ' out';
         await fetchContent(sel);
         renderStreaming();

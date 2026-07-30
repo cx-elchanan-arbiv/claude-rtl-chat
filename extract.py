@@ -2,14 +2,29 @@
 """Scan Claude sessions and feed the RTL mirror.
 
 Writes:
-  * sessions.json  — lightweight index (id, project, snippet, mtime, turns, active).
+  * sessions.json  — lightweight index (id, project, snippet, last, turns, active,
+    origin, bg).
   * s-<id>.md      — full RTL conversation per session, re-rendered ONLY when the
     transcript changed. Conversation text is markdown; tool actions (Edit/Write/
     Bash) and their outputs become collapsible <details> the page renders inline.
 
-active  = touched within ACTIVE_SECONDS (terminals in use).
-history = older, kept within HISTORY_SECONDS, for recovering a closed session.
+active  = held open by a live claude session process (see live_session_ids).
+history = everything else, kept within HISTORY_SECONDS, for recovering a closed session.
+
+last    = timestamp of the last REAL message, not the file's mtime. Claude Code appends
+  metadata-only lines (ai-title / agent-name / mode, none of them timestamped) whenever
+  its daemon re-claims an old background job, which bumps mtime without adding a word to
+  the conversation. Sorting/displaying by mtime therefore floated long-dead jobs to the
+  top of the strip wearing today's clock (2026-07-30: three tabs whose last real message
+  was 10-12 July). Everything user-facing keys on `last`; mtime stays only as the
+  cheap "did the file change" signal for the render cache and the HISTORY_SECONDS sweep.
+origin  = who opened it: "web" (this UI, `claude -p` → entrypoint sdk-cli), "terminal"
+  (entrypoint cli, incl. background jobs), or "mixed" (a terminal session we adopted and
+  then wrote to). Drives the 3-way view filter in the page.
+bg      = it's a background job (`sessionKind: "bg"` in the transcript), i.e. an agent
+  the terminal spawned — not a chat you sat in front of.
 """
+import datetime
 import glob
 import html
 import json
@@ -38,14 +53,50 @@ def project_label(project_dir):
     return name.rstrip("-").split("-")[-1] or name
 
 
-def _claude_pids():
+# Plumbing the Claude Code daemon keeps around: pre-warmed PTY hosts / spares, and the
+# daemon itself. They all run with argv[0] == "claude", they OUTLIVE the terminal window
+# by design, and every claimed spare leaves a ~/.claude/sessions/<pid>.json still pointing
+# at the session it once hosted — so counting them as live sessions marked long-finished
+# background jobs "open in a terminal" (2026-07-30: tabs from 10-12 July shown as live).
+HELPER_MARKERS = ("bg-spare", "bg-pty-host", "daemon run")
+# What a real session process looks like: the bare `claude` launcher, or the versioned
+# binary it execs (~/.local/share/claude/versions/<v>). The old check compared ps's `comm`
+# field to "claude" — but macOS prints comm as a full PATH, so it matched ONLY argv[0]
+# == "claude" (the helpers above + terminals started by typing `claude`) and silently
+# missed every session running as the versioned binary. Matching on the command line
+# fixes both halves: the helpers drop out, the real sessions come in.
+CLAUDE_PATH_MARKS = ("/claude/versions/",)
+
+
+def _claude_procs():
+    """pid -> full command line for every live process. None when ps is unusable."""
     try:
-        ps = subprocess.run(["ps", "-Ao", "pid,comm"],
+        ps = subprocess.run(["ps", "-Ao", "pid=,command="],
                             capture_output=True, text=True, timeout=4).stdout
     except Exception:
         return None
-    return [p.split()[0] for p in ps.splitlines()
-            if p.strip().split()[1:2] == ["claude"]]
+    procs = {}
+    for line in ps.splitlines():
+        pid, _, cmd = line.strip().partition(" ")
+        if pid.isdigit() and cmd.strip():
+            procs[pid] = cmd.strip()
+    return procs
+
+
+def _claude_pids():
+    """PIDs of live claude SESSION processes — daemon plumbing deliberately excluded.
+    Returns None when we can't tell (no ps), so callers can fall back."""
+    procs = _claude_procs()
+    if procs is None:
+        return None
+    pids = []
+    for pid, cmd in procs.items():
+        argv0 = cmd.split(None, 1)[0]
+        is_claude = (os.path.basename(argv0) == "claude"
+                     or any(m in argv0 for m in CLAUDE_PATH_MARKS))
+        if is_claude and not any(m in cmd for m in HELPER_MARKERS):
+            pids.append(pid)
+    return pids
 
 
 SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
@@ -54,9 +105,10 @@ SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
 def live_session_ids():
     """PRECISE 'which sessions are live in a terminal' signal: Claude Code writes
     ~/.claude/sessions/<pid>.json for every running process, recording its exact
-    sessionId + cwd. We read those and keep only the ones whose pid is still a
-    live `claude` process (the files linger after a crash), giving the precise set
-    of session ids currently open in a terminal.
+    sessionId + cwd. We read those and keep only the ones whose pid is still a live
+    claude SESSION process per _claude_pids (the files linger after a crash, and the
+    daemon's spares hold on to theirs long after the job they hosted finished), giving
+    the precise set of session ids currently open in a terminal.
 
     Returns that set, or None when we can't tell — no `ps`, can't read the dir, or
     claude is running yet no session file matches (the layout changed) — so the
@@ -232,10 +284,26 @@ def split_user(content):
     return "\n\n".join(texts), results
 
 
+def ts_epoch(iso):
+    """'2026-07-12T14:07:54.713Z' -> epoch seconds, or None if it isn't a timestamp.
+    Only real messages carry one; the metadata lines a daemon re-claim appends don't."""
+    if not isinstance(iso, str) or not iso:
+        return None
+    try:
+        return int(datetime.datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp())
+    except Exception:
+        return None
+
+
 def render(path):
-    """Render one transcript to markdown (+inline tool <details>)."""
+    """Render one transcript to markdown (+inline tool <details>).
+
+    Also reports, from the same single pass: `last` (epoch of the newest real message),
+    `origin` ("web"/"terminal"/"mixed", from each message's entrypoint) and `bg` (is this
+    a background job) — see the module docstring for why those don't come from the file."""
     parts, last_user, first_user = [], "", ""
     tok_total, tok_out = 0, 0
+    last_ts, seen_web, seen_term, is_bg = 0, False, False, False
     speaker = None  # 'user' | 'assistant'
 
     def header(role):
@@ -258,7 +326,17 @@ def render(path):
                 continue
             role = event.get("type")
             if role not in ("user", "assistant"):
-                continue
+                continue                      # metadata line — never counts as activity
+            ts = ts_epoch(event.get("timestamp"))
+            if ts and ts > last_ts:
+                last_ts = ts
+            ep = event.get("entrypoint")
+            if ep == "sdk-cli":               # our own `claude -p` — a message from this UI
+                seen_web = True
+            elif ep == "cli":                 # typed in a terminal, or a bg job it spawned
+                seen_term = True
+            if event.get("sessionKind") == "bg":
+                is_bg = True
             content = event.get("message", {}).get("content", [])
 
             if role == "assistant":
@@ -296,7 +374,9 @@ def render(path):
     clean = IMG_MARK.sub("", last_user)
     snippet = " ".join(clean.split())[:40] or "(תמונה)"
     ftitle = " ".join(IMG_MARK.sub("", first_user).split())[:38] or "(תמונה)"
-    return md, turns, snippet, tok_total, tok_out, ftitle
+    # unknown entrypoint (old transcripts) -> "terminal": not ours until proven otherwise.
+    origin = ("mixed" if seen_web and seen_term else "web" if seen_web else "terminal")
+    return md, turns, snippet, tok_total, tok_out, ftitle, last_ts, origin, is_bg
 
 
 def load_cache():
@@ -340,6 +420,9 @@ def main():
 def _run():
     now = time.time()
     files = glob.glob(os.path.join(PROJECTS, "*", "*.jsonl"))
+    # mtime on purpose here: it's the only signal available without reading the file, so
+    # it stays the cheap prefilter/cap. A daemon-touched old job therefore still enters the
+    # index — and then sorts by its REAL last message, i.e. way down in history.
     files = [f for f in files if now - os.path.getmtime(f) <= HISTORY_SECONDS]
     files.sort(key=os.path.getmtime, reverse=True)
     files = files[:MAX_SESSIONS]
@@ -366,19 +449,23 @@ def _run():
         keep.add(mdname)
 
         c = cache.get(sid)
-        if c and c.get("sig") == sig and os.path.exists(mdpath) and "title" in c:
+        # "last" in c doubles as the cache version: an entry written before this field
+        # existed re-renders once instead of publishing a session with no real timestamp.
+        if c and c.get("sig") == sig and os.path.exists(mdpath) and "last" in c:
             snippet, turns = c["snippet"], c["turns"]
             tokens, out, title = c["tokens"], c.get("out", 0), c["title"]
+            last, origin, bg = c["last"], c["origin"], c["bg"]
         else:
             try:
-                md, turns, snippet, tokens, out, title = render(path)
+                md, turns, snippet, tokens, out, title, last, origin, bg = render(path)
             except Exception:
                 continue
             write_atomic(mdpath, md)
+        last = last or mt      # transcript has no timestamped message at all → file time
 
-        # active = this exact session is held open by a live `claude` terminal.
-        # Fallbacks when the precise signal is unavailable: an open terminal in
-        # this project (top-K by recency), else the recent-mtime time window.
+        # active = this exact session is held open by a live claude session process.
+        # Fallbacks when the precise signal is unavailable: an open terminal in this
+        # project (top-K by recency), else "spoke within ACTIVE_SECONDS".
         projdir = os.path.basename(os.path.dirname(path))
         if live_ids is not None:
             is_active = sid in live_ids
@@ -388,18 +475,19 @@ def _run():
             if is_active:
                 used[projdir] = used.get(projdir, 0) + 1
         else:
-            is_active = (now - mt) <= ACTIVE_SECONDS
+            is_active = (now - last) <= ACTIVE_SECONDS   # last real message, not mtime
         if sid in owned:
             is_active = True   # browser chats stay "open" even when no process runs
 
         new_cache[sid] = {"sig": sig, "mtime": mt, "snippet": snippet, "turns": turns,
-                          "tokens": tokens, "out": out, "title": title}
+                          "tokens": tokens, "out": out, "title": title,
+                          "last": last, "origin": origin, "bg": bg}
         seen_ids.add(sid)
         sessions.append({
             "id": sid, "short": sid[:8],
             "project": project_label(os.path.dirname(path)),
             "snippet": snippet, "title": title, "mtime": mt, "turns": turns,
-            "tokens": tokens, "out": out,
+            "tokens": tokens, "out": out, "last": last, "origin": origin, "bg": bg,
             "active": is_active, "owned": sid in owned, "md": mdname,
         })
 
@@ -412,9 +500,11 @@ def _run():
             "project": os.path.basename((meta.get("cwd") or "chat").rstrip("/")) or "chat",
             "snippet": "", "title": meta.get("title", "שיחה חדשה"),
             "mtime": meta.get("created", int(now)), "turns": 0,
-            "tokens": 0, "out": 0, "active": True, "owned": True, "md": None,
+            "tokens": 0, "out": 0, "last": meta.get("created", int(now)),
+            "origin": "web", "bg": False,
+            "active": True, "owned": True, "md": None,
         })
-    sessions.sort(key=lambda s: s["mtime"], reverse=True)
+    sessions.sort(key=lambda s: s["last"], reverse=True)   # real activity, not file mtime
 
     write_atomic(INDEX, json.dumps({"generated": int(now), "sessions": sessions},
                                    ensure_ascii=False))
