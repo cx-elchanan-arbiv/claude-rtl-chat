@@ -1397,11 +1397,18 @@
   // instead of stacking it after the open tabs, which used to bury both in one unreadable
   // row. The chat you're reading always keeps its tab, even when it belongs to the strip
   // that isn't showing — so you can never end up looking at a conversation with no tab.
+  // ...and it only ENGAGES when there is history to show. Without this, turning the view
+  // filter to a mode whose history is empty (every history entry is terminal-born, so
+  // "מהדפדפן" has none) left the strip on an empty history list while the היסטוריה button
+  // hid itself for being empty — no tabs and no way back except changing the filter.
+  function histOn(history) { return showHistory && history.length > 0; }
+
   function renderTabs(active, history) {
     elTabs.innerHTML = '';
     const histIds = new Set(history.map(s => s.id));
-    const shown = showHistory ? history : active;
-    const pinned = (showHistory ? active : history).filter(s => s.id === selectedId);
+    const on = histOn(history);
+    const shown = on ? history : active;
+    const pinned = (on ? active : history).filter(s => s.id === selectedId);
     pinned.concat(shown).forEach(s => elTabs.appendChild(makeTab(s, histIds.has(s.id))));
     requestAnimationFrame(updateTabArrows);   // refresh ‹ › arrow visibility for the new tab set
   }
@@ -1610,7 +1617,7 @@
 
       sessions.forEach(s => { if (seenAt[s.id] === undefined) seenAt[s.id] = actAt(s); });
       // candidates if the selection vanished: whatever strip is on screen, else anything.
-      const shown = showHistory ? history : active;
+      const shown = histOn(history) ? history : active;
       const pool = shown.length ? shown : active.concat(history);
       // only re-select when the chat is really GONE from the index — being hidden by the
       // history toggle or the view filter must not move you (and don't reset away from a

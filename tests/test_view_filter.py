@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import jsbridge  # noqa: E402
 import run  # noqa: E402
 
-SYMBOLS = ["actAt", "isWeb", "inView", "originNote"]
+SYMBOLS = ["actAt", "isWeb", "inView", "originNote", "histOn"]
 
 # the four kinds of tab that share the strip
 WEB = {"id": "w", "owned": True, "origin": "web", "bg": False}
@@ -40,7 +40,7 @@ JOB = {"id": "j", "owned": False, "origin": "terminal", "bg": True}
 def _eval(script):
     if not jsbridge.node_available():
         raise run.SkipTest("node is not installed")
-    return jsbridge.run(SYMBOLS, "let viewMode = 'all';\n" + script)
+    return jsbridge.run(SYMBOLS, "let viewMode = 'all', showHistory = false;\n" + script)
 
 
 def _call(fn, session):
@@ -110,6 +110,23 @@ def test_the_two_filtered_views_are_complementary():
         """ % json.dumps(s))
         assert pair.count(True) == 1, \
             f"{s['id']}: appears in {pair.count(True)} of the two views, must be exactly 1"
+
+
+def test_history_mode_needs_history_to_engage():
+    """The trap this guards (caught in the browser, 2026-07-30): switch the view to
+    מהדפדפן and the filtered history is empty — every history entry is terminal-born. The
+    strip then rendered that empty history while the היסטוריה button hid itself for being
+    empty, so there were no tabs at all and no way back except changing the filter."""
+    got = _eval("""
+      showHistory = true;
+      const withHistory = histOn([{id: 'h'}]);
+      const noHistory = histOn([]);
+      showHistory = false;
+      const off = histOn([{id: 'h'}]);
+      console.log(JSON.stringify([withHistory, noHistory, off]));
+    """)
+    assert got == [True, False, False], \
+        f"history mode must need BOTH the toggle and a non-empty history, got {got}"
 
 
 def test_originNote_explains_a_background_job():
