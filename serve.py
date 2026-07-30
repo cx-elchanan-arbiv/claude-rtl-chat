@@ -41,6 +41,12 @@ DEFAULT_CWD = os.path.expanduser("~")
 PROJECTS_PARENT = os.path.expanduser("~/Projects")   # offered in the dir picker
 UPLOADS = os.path.join(BASE, "uploads")              # pasted/attached files land here
 os.makedirs(UPLOADS, exist_ok=True)
+# Nothing ever removed uploads, so every screenshot ever pasted was still on disk
+# (187MB by 2026-07). sweep_uploads() prunes them once per startup. The trade-off is
+# scroll-back fidelity: an image still linked from an old transcript 404s once it's
+# gone. Lower to reclaim more aggressively; 0 disables the sweep entirely.
+UPLOAD_RETENTION_DAYS = 90
+UPLOAD_NAME_RE = re.compile(r"^[0-9a-f]{8}_")        # the prefix do_POST assigns — only ours
 
 # Permission levels for browser-run Claude, chosen per-session (stored in owned.json).
 # Headless `claude -p` can't prompt, so each level is a fixed set of pre-auth flags
@@ -543,7 +549,33 @@ def usage_loop():
         time.sleep(300)
 
 
+def sweep_uploads():
+    """Delete uploads past the retention window. Only touches files this server named."""
+    if UPLOAD_RETENTION_DAYS <= 0:
+        return
+    cutoff = time.time() - UPLOAD_RETENTION_DAYS * 86400
+    gone = freed = 0
+    for name in os.listdir(UPLOADS):
+        if not UPLOAD_NAME_RE.match(name):
+            continue                                 # not ours (hand-placed file) — never touch it
+        p = os.path.join(UPLOADS, name)
+        try:
+            if not os.path.isfile(p):
+                continue
+            size = os.path.getsize(p)
+            if os.path.getmtime(p) >= cutoff:
+                continue
+            os.remove(p)
+        except OSError:
+            continue                                 # racing with a live upload — leave it
+        gone, freed = gone + 1, freed + size
+    if gone:
+        print(f"uploads sweep: removed {gone} file(s) older than "
+              f"{UPLOAD_RETENTION_DAYS}d ({freed / 1e6:.0f} MB)", flush=True)
+
+
 def main():
+    sweep_uploads()
     threading.Thread(target=extract_loop, daemon=True).start()
     threading.Thread(target=usage_loop, daemon=True).start()
     print(f"RTL chat (V2) serving on http://127.0.0.1:{PORT}", flush=True)

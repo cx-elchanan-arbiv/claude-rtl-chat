@@ -152,8 +152,11 @@
     padding: 14px 16px; overflow-x: auto; direction: ltr; text-align: left;
   }
   #content pre code { background: none; padding: 0; }
+  /* layout:auto proportions columns by content — a "—" column shouldn't claim the
+     same width as one holding a sentence. overflow-wrap below is what stops the
+     overflow that `fixed` was guarding against. */
   #content table { border-collapse: collapse; margin: 1.1em 0; width: 100%;
-    table-layout: fixed; font-size: .93em; line-height: 1.55; }
+    font-size: .93em; line-height: 1.55; }
   /* isolate: a latin run in one cell must not reorder its RTL neighbour.
      top + break-word: prose cells of unequal length still line up and never overflow. */
   #content th, #content td { border: 1px solid var(--border); padding: 8px 12px;
@@ -232,7 +235,7 @@
   }
   #padView pre code { background: none; padding: 0; }
   #padView table { border-collapse: collapse; margin: 1.1em 0; width: 100%;
-    table-layout: fixed; font-size: .82em; line-height: 1.55; }
+    font-size: .82em; line-height: 1.55; }
   #padView th, #padView td { border: 1px solid var(--border); padding: 8px 12px;
     text-align: right; unicode-bidi: isolate; vertical-align: top; overflow-wrap: anywhere; }
   #padView th { background: var(--code-bg); color: var(--accent); font-weight: 700; }
@@ -1234,23 +1237,56 @@
   }
 
   // append a "copy all" button that copies the full text of Claude's reply
+  // ---- rich copy ----------------------------------------------------------
+  // A <table> read as text is tab-separated soup — paste it anywhere and the table
+  // is gone. So: re-serialise tables to markdown pipe rows for the plain-text
+  // flavour, and put the rendered HTML on the clipboard alongside it, which makes
+  // Gmail / Docs / Word / Slack paste a real formatted table.
+  function tableToMd(tbl) {
+    const rows = Array.from(tbl.rows).map(r => Array.from(r.cells)
+      .map(c => c.textContent.trim().replace(/\s+/g, ' ').replace(/\|/g, '\\|')));
+    if (!rows.length) return '';
+    const w = Math.max(...rows.map(r => r.length));
+    const line = r => '| ' + Array.from({ length: w }, (_, k) => r[k] || ' ').join(' | ') + ' |';
+    const heads = tbl.tHead ? tbl.tHead.rows.length : 1;
+    return [...rows.slice(0, heads).map(line), '|' + ' --- |'.repeat(w),
+            ...rows.slice(heads).map(line)].join('\n');
+  }
+
+  function copyRich(srcNode, btn, label) {
+    const clone = srcNode.cloneNode(true);
+    clone.removeAttribute('id');                                    // no duplicate ids while it's parked
+    clone.querySelectorAll('h3, .copyall').forEach(n => n.remove()); // drop the header + the button itself
+    clone.querySelectorAll('details').forEach(d => d.open = true);   // include collapsed tool blocks
+    const html = clone.innerHTML;
+    clone.querySelectorAll('table').forEach(t =>
+      t.replaceWith(document.createTextNode('\n' + tableToMd(t) + '\n')));
+    // innerText on a DETACHED clone silently degrades to textContent (the element
+    // isn't being rendered), which glued every block together with no line breaks.
+    // Park it off-screen so it's laid out and innerText means what it says.
+    clone.style.cssText = 'position:absolute;left:-99999px;top:0;width:900px';
+    clone.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(clone);
+    const text = clone.innerText.replace(/\n{3,}/g, '\n\n').trim();
+    clone.remove();
+
+    const flash = m => { btn.textContent = m; setTimeout(() => { btn.textContent = label; }, 1200); };
+    const write = (window.ClipboardItem && navigator.clipboard.write)
+      ? navigator.clipboard.write([new ClipboardItem({
+          'text/html': new Blob([html], { type: 'text/html' }),
+          'text/plain': new Blob([text], { type: 'text/plain' }),
+        })])
+      : navigator.clipboard.writeText(text);                        // older browser: plain only
+    write.then(() => flash('✓ הועתק')).catch(() => flash('✕ נכשל'));
+  }
+
   function addCopyAll(box) {
     if (box.querySelector(':scope > .copyall')) return;   // already added
     const btn = document.createElement('button');
     btn.className = 'copyall';
     btn.type = 'button';
-    btn.innerHTML = '📋 העתק הכל';
-    btn.onclick = () => {
-      // grab reply text without the "🤖 Claude" header or the button itself
-      const clone = box.cloneNode(true);
-      clone.querySelectorAll('h3, .copyall').forEach(n => n.remove());
-      clone.querySelectorAll('details').forEach(d => d.open = true);   // include collapsed tool blocks
-      const text = clone.innerText.replace(/\n{3,}/g, '\n\n').trim();
-      navigator.clipboard.writeText(text).then(() => {
-        btn.innerHTML = '✓ הועתק';
-        setTimeout(() => { btn.innerHTML = '📋 העתק הכל'; }, 1200);
-      }).catch(() => { btn.innerHTML = '✕ נכשל'; setTimeout(() => { btn.innerHTML = '📋 העתק הכל'; }, 1200); });
-    };
+    btn.textContent = '📋 העתק הכל';
+    btn.onclick = () => copyRich(box, btn, '📋 העתק הכל');
     box.appendChild(btn);
   }
 
@@ -1738,13 +1774,7 @@
       pad.classList.toggle('hideSrc');
       e.target.textContent = pad.classList.contains('hideSrc') ? '✏️ הצג מקור' : '🔎 הסתר מקור';
     };
-    document.getElementById('padCopy').onclick = (e) => {
-      const txt = view.innerText.replace(/\n{3,}/g, '\n\n').trim();
-      navigator.clipboard.writeText(txt).then(() => {
-        const b = e.target; const o = b.textContent; b.textContent = '✓ הועתק';
-        setTimeout(() => { b.textContent = o; }, 1200);
-      });
-    };
+    document.getElementById('padCopy').onclick = (e) => copyRich(view, e.target, '📋 העתק');
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape' && pad.classList.contains('open')) closePad();
     });
