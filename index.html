@@ -33,12 +33,19 @@
   #workState { font-weight: 600; padding: 2px 11px; border-radius: 12px; font-size: 12.5px; white-space: nowrap; }
   #workState.work { color: #f9e2af; background: rgba(249,226,175,.14); }
   #workState.ready { color: var(--new); background: rgba(166,227,161,.13); }
-  /* which chats the strip shows: everything / only ours / only the terminal's */
-  #viewSel {
-    margin-inline-start: auto; background: var(--bg); color: var(--muted);
+  /* two INDEPENDENT view filters (source, kind) + the history toggle, all combinable */
+  #viewSel, #jobSel {
+    background: var(--bg); color: var(--muted);
     border: 1px solid var(--border); border-radius: 7px; padding: 3px 8px; font-size: 12px;
   }
-  #viewSel.filtered { color: var(--fg); border-color: var(--accent); }   /* not showing all */
+  #viewSel { margin-inline-start: auto; }
+  #viewSel.filtered, #jobSel.filtered { color: var(--fg); border-color: var(--accent); }
+  /* restore what you hid from history — only rendered when something is hidden */
+  #unhideBtn {
+    cursor: pointer; user-select: none; border: 1px dashed var(--border); border-radius: 7px;
+    padding: 3px 9px; color: var(--muted); background: var(--bg); font-size: 12px;
+  }
+  #unhideBtn:hover { color: var(--fg); border-color: var(--accent); }
   #histBtn {
     cursor: pointer; user-select: none;
     border: 1px solid var(--border); border-radius: 7px; padding: 3px 10px;
@@ -79,6 +86,10 @@
   }
   .tab.active { color: var(--fg); border-color: var(--accent); }
   .tab.hist { opacity: .72; }
+  /* a tab held on screen only because you're reading it — it does NOT belong to the strip
+     you're looking at. Dashed, so "closed conversation sitting in the open row" (or the
+     reverse) can never be mistaken for the real thing again. */
+  .tab.pinned { border-style: dashed; opacity: 1; }
   .tab .name { font-weight: 600; font-size: 14.5px; display: block; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis; max-width: 250px; }
   .tab .sub { color: var(--muted); display: block; white-space: nowrap;
@@ -436,6 +447,9 @@
   .tab .close:hover { color: #f38ba8; }
   .tab.owned .close { display: block; }
   .tab.owned { padding-inline-end: 22px; }
+  /* ✕ on a closed conversation = hide it from history (reversible, nothing is deleted) */
+  .tab.hist:not(.owned) .close { display: block; }
+  .tab.hist:not(.owned) { padding-inline-end: 22px; }
   .tab.busy .name::before { content: '⏳ '; }
   #working { display: none; flex: 0 0 auto; align-items: center; gap: 9px;
     padding: 8px 16px; font-size: 14px; color: var(--accent);
@@ -510,11 +524,17 @@
         <option value="haiku">🧠 Haiku</option>
         <option value="fable">🧠 Fable</option>
       </select>
-      <select id="viewSel" title="אילו שיחות להציג בשורת הטאבים">
-        <option value="all">🗂️ הכל</option>
-        <option value="web">💻 מהדפדפן</option>
-        <option value="terminal">⌨️ מהטרמינל</option>
+      <select id="viewSel" title="לפי מקור: מה שנפתח כאן בדפדפן, מה שנפתח בטרמינל, או שניהם">
+        <option value="both">💻 דפדפן + ⌨️ טרמינל</option>
+        <option value="web">💻 דפדפן</option>
+        <option value="terminal">⌨️ טרמינל</option>
       </select>
+      <select id="jobSel" title="לפי סוג: שיחות שדיברת בהן, ג'ובים שהטרמינל הריץ ברקע, או שניהם">
+        <option value="both">💬 שיחות + ⚙︎ ג'ובים</option>
+        <option value="chats">💬 שיחות</option>
+        <option value="jobs">⚙︎ ג'ובים</option>
+      </select>
+      <span id="unhideBtn" style="display:none"></span>
       <span id="histBtn" style="display:none"></span>
     </div>
     <div id="tabStrip">
@@ -652,6 +672,8 @@
   const elStatus = document.getElementById('status');
   const elHist = document.getElementById('histBtn');
   const elViewSel = document.getElementById('viewSel');
+  const elJobSel = document.getElementById('jobSel');
+  const elUnhide = document.getElementById('unhideBtn');
   const elFootTok = document.getElementById('foot-tok');
   const elFootMax = document.getElementById('foot-max');
   const elNew = document.getElementById('newBtn');
@@ -942,9 +964,23 @@
   let selectedId = _urlId || localStorage.getItem('rtl-selected') || null;
   if (_urlId) localStorage.setItem('rtl-selected', _urlId);
   let showHistory = localStorage.getItem('rtl-hist') === '1';
-  // which chats the strip shows: 'all' | 'web' (opened here) | 'terminal' (mirrored).
-  // Purely a view filter — nothing is closed, stopped or hidden from the server.
-  let viewMode = localStorage.getItem('rtl-viewmode') || 'all';
+  // THREE independent view controls, combinable in any mix — that's the point of keeping
+  // them separate rather than one "all/web/terminal/history" list:
+  //   viewMode  by source: 'both' | 'web' (opened here) | 'terminal' (mirrored)
+  //   jobMode   by kind:   'both' | 'chats' (you talked in it) | 'jobs' (bg agents)
+  //   showHistory          open chats, or closed ones — never both at once
+  // All three are pure view state: nothing is closed, stopped or hidden from the server.
+  const VIEW_MODES = ['both', 'web', 'terminal'];
+  const JOB_MODES = ['both', 'chats', 'jobs'];
+  // 'all' was this filter's original name before it said what it actually showed
+  // ("דפדפן + טרמינל"). A browser that still has the old value saved must not end up with
+  // an unknown mode, which would make every predicate fall through to "hide everything".
+  function normalizeViewMode(v) {
+    return v === 'all' ? 'both' : (VIEW_MODES.indexOf(v) >= 0 ? v : 'both');
+  }
+  function normalizeJobMode(v) { return JOB_MODES.indexOf(v) >= 0 ? v : 'both'; }
+  let viewMode = normalizeViewMode(localStorage.getItem('rtl-viewmode'));
+  let jobMode = normalizeJobMode(localStorage.getItem('rtl-jobmode'));
   let seenAt = {};                 // id -> last real-activity time we've already shown
   let tabOrder = [];               // stable tab order (ids) — so a message never reshuffles tabs
   try { tabOrder = JSON.parse(localStorage.getItem('rtl-taborder') || '[]') || []; } catch (e) {}
@@ -981,25 +1017,45 @@
     localStorage.setItem('rtl-hist', showHistory ? '1' : '0');
   };
 
-  // ---- view filter: everything / only chats opened here / only mirrored terminal ones ----
+  // ---- restore everything hidden from history (the way back out of a ✕) ----
+  elUnhide.onclick = () => {
+    if (!confirm('להחזיר את כל השיחות שהוסתרו מההיסטוריה?')) return;
+    fetch('/unhide-all', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}) }).then(() => tick());
+  };
+
+  // ---- the two view filters (source, kind) — independent, ANDed, each persisted ----
   elViewSel.value = viewMode;
-  function paintViewSel() { elViewSel.classList.toggle('filtered', viewMode !== 'all'); }
-  paintViewSel();
-  elViewSel.onchange = () => {
-    viewMode = elViewSel.value;
-    localStorage.setItem('rtl-viewmode', viewMode);
-    paintViewSel();
-    // an explicit switch is the ONE place allowed to move you: if the chat you're on isn't
-    // in the new view, land on the first one that is (ticks leave the selection alone).
-    const all = (window._active || []).concat(window._history || []);
-    const sel = all.find(s => s.id === selectedId);
-    const next = all.find(inView);
-    if (sel && !inView(sel) && next) {
-      selectedId = next.id;
+  elJobSel.value = jobMode;
+  function paintFilters() {
+    elViewSel.classList.toggle('filtered', viewMode !== 'both');
+    elJobSel.classList.toggle('filtered', jobMode !== 'both');
+  }
+  paintFilters();
+  // an explicit switch is the ONE place allowed to move you: if the chat you're on isn't in
+  // the new view, land on the first one that is (ticks leave the selection alone).
+  function afterFilterChange() {
+    paintFilters();
+    // the UNFILTERED list: _active/_history are already filtered, so after a switch they can
+    // hold nothing matching the new mode — and you'd stay parked on an excluded chat.
+    const all = window._all || (window._active || []).concat(window._history || []);
+    const pick = pickAfterFilter(all, selectedId);
+    if (pick !== selectedId) {
+      selectedId = pick;
       localStorage.setItem('rtl-selected', selectedId);
       lastMd = null; lastSelected = null;      // force a re-render of the new chat
     }
     tick();
+  }
+  elViewSel.onchange = () => {
+    viewMode = elViewSel.value;
+    localStorage.setItem('rtl-viewmode', viewMode);
+    afterFilterChange();
+  };
+  elJobSel.onchange = () => {
+    jobMode = elJobSel.value;
+    localStorage.setItem('rtl-jobmode', jobMode);
+    afterFilterChange();
   };
 
   // ---- adopt: take ownership of a terminal-started (read-only) session ----
@@ -1363,36 +1419,106 @@
   // where the chat came from — 'web' = opened here, 'terminal' = mirrored, 'mixed' = a
   // terminal session we adopted. Owned counts as ours: you can write to it.
   function isWeb(s) { return !!(s.owned || s.origin === 'web' || s.origin === 'mixed'); }
-  function inView(s) {
-    return viewMode === 'all' || (viewMode === 'web' ? isWeb(s) : !isWeb(s));
+  // the two filters are ANDed and each is complete on its own, so every combination is
+  // reachable: "terminal jobs only", "browser chats only", "everything", …
+  function inSource(s) {
+    return viewMode === 'both' || (viewMode === 'web' ? isWeb(s) : !isWeb(s));
   }
+  function inKind(s) {
+    return jobMode === 'both' || (jobMode === 'jobs' ? !!s.bg : !s.bg);
+  }
+  function inView(s) { return inSource(s) && inKind(s); }
+  // Where to land when the chat you were reading leaves the strip (hidden / closed / gone).
+  // NOT "the first tab in the saved order": that order is deliberately stable and unrelated
+  // to recency, so it once dropped the user on a 0-turn session from hours earlier that
+  // rendered as an empty "ממתין לתשובה הראשונה…" screen. Newest real activity wins.
+  function mostRecent(list) {
+    return (list || []).reduce((a, b) => (actAt(b) > actAt(a) ? b : a), (list || [])[0]) || null;
+  }
+  // ...and when you close/hide the tab you're on, prefer its neighbour in the strip, the way
+  // a browser does: the next tab, or the previous one if it was last.
+  function neighbourOf(ids, id) {
+    const i = (ids || []).indexOf(id);
+    if (i < 0) return null;
+    return ids[i + 1] || ids[i - 1] || null;
+  }
+
+  // How a tab that's on screen only because you're reading it announces itself. Born from a
+  // real confusion (2026-07-30): a CLOSED conversation sat in the row of open ones and read
+  // as open, because nothing distinguished "belongs here" from "kept for you".
+  function pinLabel(isHist, isPinned, kept) {
+    if (kept) return { prefix: '', note: ' · מחוץ לסינון — מוצגת רק כי אתה קורא אותה' };
+    if (!isPinned) return { prefix: '', note: '' };
+    return isHist
+      ? { prefix: '🕓 היסטוריה · ', note: ' · שיחה סגורה — מוצגת רק כי אתה קורא אותה' }
+      : { prefix: '● פתוח · ', note: ' · שיחה פתוחה — מוצגת רק כי אתה קורא אותה' };
+  }
+
+  // Which chat to show after a filter switch: stay where you are unless the new filter
+  // excludes it. Must search the FULL list — using the previously-filtered one left you
+  // parked on a chat the new filter hides.
+  function pickAfterFilter(all, currentId) {
+    const list = all || [];
+    const sel = list.find(s => s.id === currentId);
+    if (sel && !inView(sel)) {
+      const next = list.find(s => inView(s));
+      if (next) return next.id;
+    }
+    return currentId;
+  }
+
   function originNote(s) {
     if (s.origin === 'web') return 'נפתח בדפדפן';
     if (s.origin === 'mixed') return 'התחיל בטרמינל, אומץ לדפדפן';
     return s.bg ? 'job שהטרמינל הריץ ברקע' : 'נפתח בטרמינל';
   }
 
-  function makeTab(s, isHist) {
+  function makeTab(s, isHist, isPinned) {
     const tab = document.createElement('div');
+    // "kept": the filters exclude it and it's on screen ONLY because you're reading it —
+    // same courtesy as the history pin, and it must look just as provisional.
+    const kept = !inView(s);
+    isPinned = isPinned || kept;
+    const pin = pinLabel(isHist, isPinned, kept);
     tab.className = 'tab' + (s.id === selectedId ? ' active' : '') + (isHist ? ' hist' : '') +
+      (isPinned ? ' pinned' : '') +
       (s.owned ? ' owned' : '') + (statusMap[s.id] ? ' busy' : '') +
       (doneTabs[s.id] && s.id !== selectedId ? ' finished' : '');
     tab.dataset.id = s.id;
     const changed = seenAt[s.id] !== undefined && actAt(s) > seenAt[s.id];
     if (changed && s.id !== selectedId) tab.classList.add('haschange');
     tab.innerHTML = '<span class="ping"></span><span class="donecheck">✓</span>' +
-      (s.owned ? '<span class="close" title="סגור שיחה (תעבור להיסטוריה)">✕</span>' : '') +
+      (s.owned ? '<span class="close" title="סגור שיחה (תעבור להיסטוריה)">✕</span>'
+       : isHist ? '<span class="close" title="הסתר מההיסטוריה (הפיך — התמלול לא נמחק)">✕</span>'
+       : '') +
       '<span class="name">' + esc(tabName(s)) + '</span>' +
-      '<span class="sub">' + (s.bg ? '⚙︎ job · ' : '') + esc(s.project) +
+      '<span class="sub">' + pin.prefix +
+      (s.bg ? '⚙︎ job · ' : '') + esc(s.project) +
       ' · ' + fmtTime(actAt(s)) + '</span>';
-    tab.title = 'דאבל-קליק לשינוי שם · ' + esc(s.short) + ' · ' + originNote(s);
+    tab.title = 'דאבל-קליק לשינוי שם · ' + esc(s.short) + ' · ' + originNote(s) + pin.note;
     const closeEl = tab.querySelector('.close');
     if (closeEl) closeEl.onclick = (e) => {
       e.stopPropagation();
-      if (s.id === selectedId) { selectedId = null; pendingId = null; lastMd = null; lastSelected = null; }
+      // two different ✕: an owned chat is CLOSED (drops to history, still there); a history
+      // chat is HIDDEN from the strip. Hiding asks first and is undone by "מוסתרים ↩︎".
+      if (!s.owned) {
+        if (!confirm('להסתיר את "' + tabName(s) + '" מההיסטוריה?\n\n' +
+                     'התמלול עצמו לא נמחק — הוא נשאר ב-~/.claude/projects וגם הטרמינל ' +
+                     'ממשיך לראות אותו. אפשר להחזיר בכל רגע בכפתור "מוסתרים ↩︎".')) return;
+      }
+      if (s.id === selectedId) {
+        // hand the selection to the neighbouring tab before this one disappears, so the
+        // generic fallback never gets a chance to pick something unrelated
+        const strip = [...elTabs.querySelectorAll('.tab')].map(t => t.dataset.id);
+        selectedId = neighbourOf(strip, s.id);
+        if (selectedId) localStorage.setItem('rtl-selected', selectedId);
+        else localStorage.removeItem('rtl-selected');
+        pendingId = null; lastMd = null; lastSelected = null;
+      }
       localStorage.removeItem('rtl-name-' + s.id);
-      fetch('/close', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: s.id }) }).then(() => tick());
+      fetch(s.owned ? '/close' : '/hide',
+        { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: s.id }) }).then(() => tick());
     };
     tab.onclick = () => {
       selectedId = s.id;
@@ -1429,7 +1555,9 @@
     const on = histOn(history);
     const shown = on ? history : active;
     const pinned = (on ? active : history).filter(s => s.id === selectedId);
-    pinned.concat(shown).forEach(s => elTabs.appendChild(makeTab(s, histIds.has(s.id))));
+    const pinnedIds = new Set(pinned.map(s => s.id));
+    pinned.concat(shown).forEach(s =>
+      elTabs.appendChild(makeTab(s, histIds.has(s.id), pinnedIds.has(s.id))));
     requestAnimationFrame(updateTabArrows);   // refresh ‹ › arrow visibility for the new tab set
   }
 
@@ -1637,6 +1765,7 @@
       if (!res.ok) throw new Error(res.status);
       const data = await res.json();
       const sessions = data.sessions || [];
+      window._all = sessions;            // unfiltered, for afterFilterChange's candidate search
       let active = sessions.filter(s => s.active);
       let history = sessions.filter(s => !s.active);
       // stable order FIRST, on the UNFILTERED lists: applyStableOrder prunes ids it can't
@@ -1650,11 +1779,16 @@
       history = history.filter(keep);
       window._active = active; window._history = history;   // for instant re-render on rename
       elDot.classList.add('live');
+      const filtered = (viewMode !== 'both' || jobMode !== 'both');
       elStatus.textContent = 'חי · ' + active.length + ' פעיל' + (active.length === 1 ? '' : 'ים') +
-        (viewMode === 'all' ? '' : ' · מסונן') + ' · מתעדכן אוטומטית';
+        (filtered ? ' · מסונן' : '') + ' · מתעדכן אוטומטית';
       elHist.style.display = history.length ? 'inline-block' : 'none';
       elHist.className = showHistory ? 'on' : '';
       elHist.textContent = (showHistory ? '▾ ' : '▸ ') + 'היסטוריה (' + history.length + ')';
+      const hiddenCount = data.hidden || 0;
+      elUnhide.style.display = hiddenCount ? 'inline-block' : 'none';
+      elUnhide.textContent = '🕓 מוסתרים (' + hiddenCount + ') ↩︎';
+      elUnhide.title = 'להחזיר להיסטוריה ' + hiddenCount + ' שיחות שהסתרת';
 
       sessions.forEach(s => { if (seenAt[s.id] === undefined) seenAt[s.id] = actAt(s); });
       // candidates if the selection vanished: whatever strip is on screen, else anything.
@@ -1664,7 +1798,7 @@
       // history toggle or the view filter must not move you (and don't reset away from a
       // chat we just created, which may not be in the index yet).
       if (!selectedId || (!sessions.some(s => s.id === selectedId) && selectedId !== pendingId)) {
-        selectedId = pool.length ? pool[0].id : null;
+        selectedId = (mostRecent(pool) || {}).id || null;
       }
       if (pendingId && sessions.some(s => s.id === pendingId)) pendingId = null;  // it landed
       renderTabs(active, history);

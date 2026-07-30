@@ -22,7 +22,9 @@ its naming convention. `tests/run.py` is the fallback that always works.
 | `test_uploads_sweep.py` | `sweep_uploads()` — the only code here that deletes user files |
 | `test_html_injection.py` | The "one literal `<tag>` swallows the page" bug, turn-boundary detection, and the atomic-write race |
 | `test_extract_index.py` | The session index: real-activity time vs. the file's mtime, `origin`, the `bg` flag, and liveness that ignores the daemon's plumbing |
-| `test_view_filter.py` | `actAt()` / `isWeb()` / `inView()` / `originNote()` — the tab-strip view filter's whole rule set |
+| `test_view_filter.py` | The tab strip's whole rule set: the two independent view filters and every combination, where the selection lands when a tab disappears, and how a tab that's only kept for you announces itself |
+| `test_hide_api.py` | Hiding a conversation from history — the list round-trip, a corrupt list, and the rule that an owned chat can't be hidden |
+| `test_send_failure.py` | The send-failure path: `save_failure()` + `parseInterrupted()` + the stderr capture in `run_claude()` itself (a turn that dies must say why) |
 
 Each test file opens with the bug it exists to prevent. Read that header before
 changing the code it covers — most of these guard against a specific failure that

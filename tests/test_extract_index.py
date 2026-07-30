@@ -68,7 +68,7 @@ class Sandbox:
     """extract with every path global pointed at a temp dir, restored on exit.
     Liveness is stubbed by default so `active` never depends on the real machine."""
 
-    KEYS = ("BASE", "INDEX", "CACHE", "OWNED", "PROJECTS", "SESSIONS_DIR")
+    KEYS = ("BASE", "INDEX", "CACHE", "OWNED", "HIDDEN", "PROJECTS", "SESSIONS_DIR")
 
     def __enter__(self):
         self.dir = tempfile.mkdtemp(prefix="rtl-test-")
@@ -84,6 +84,7 @@ class Sandbox:
         extract.INDEX = os.path.join(self.dir, "sessions.json")
         extract.CACHE = os.path.join(self.dir, "_cache.json")
         extract.OWNED = os.path.join(self.dir, "owned.json")
+        extract.HIDDEN = os.path.join(self.dir, "hidden.json")
         extract.live_session_ids = lambda: set()      # nothing live unless a test says so
         return self
 
@@ -106,10 +107,19 @@ class Sandbox:
         with open(extract.OWNED, "w", encoding="utf-8") as fh:
             json.dump(d, fh, ensure_ascii=False)
 
+    def set_hidden(self, ids):
+        with open(extract.HIDDEN, "w", encoding="utf-8") as fh:
+            json.dump(ids, fh, ensure_ascii=False)
+
     def index(self):
         extract.main()
         with open(extract.INDEX, encoding="utf-8") as fh:
             return {s["id"]: s for s in json.load(fh)["sessions"]}
+
+    def raw_index(self):
+        extract.main()
+        with open(extract.INDEX, encoding="utf-8") as fh:
+            return json.load(fh)
 
     def order(self):
         extract.main()
@@ -269,6 +279,64 @@ def test_owned_chats_stay_open_and_are_web():
     assert idx["mine"]["last"] == now - 10, "placeholder falls back to its creation time"
     assert idx["adopted"]["active"] is True, \
         "an owned chat stays open even with no live process and an old transcript"
+
+
+def test_hidden_sessions_leave_the_index_but_not_the_disk():
+    """✕ on a history tab hides it from the strip. It must be a VIEW list only: the
+    transcript in ~/.claude/projects is Claude Code's data — the terminal can still resume
+    that session — so hiding may never touch it. Our own rendered copy DOES go, which is
+    the point: those are the megabytes we can reclaim."""
+    now = int(time.time())
+    with Sandbox() as box:
+        path = box.write("boring", [_msg("assistant", "מילה שלא רוצה לראות", now - 3 * DAY)])
+        box.write("keeper", [_msg("assistant", "כן", now - 3 * DAY)])
+        first = box.index()
+        assert "boring" in first, "test setup: it must be there before hiding"
+        md = os.path.join(box.dir, "s-boring.md")
+        assert os.path.exists(md), "test setup: its rendered copy exists before hiding"
+
+        box.set_hidden(["boring"])
+        idx = box.raw_index()
+        # both checked INSIDE the sandbox — its temp dir is gone once the block exits
+        transcript_survived = os.path.exists(path)
+        rendered_copy_left = os.path.exists(md)
+
+    ids = {s["id"] for s in idx["sessions"]}
+    assert "boring" not in ids, "a hidden session must not reach the page"
+    assert "keeper" in ids, "and hiding one must not disturb the others"
+    assert idx["hidden"] == 1, f"the page needs the count for its restore button, got {idx}"
+    assert transcript_survived, \
+        "THE TRANSCRIPT MUST SURVIVE — it belongs to Claude Code, not to us"
+    assert not rendered_copy_left, "our own rendered copy should be reclaimed"
+
+
+def test_unhiding_brings_it_straight_back():
+    """The way out of a ✕ — otherwise hiding is a one-way door."""
+    now = int(time.time())
+    with Sandbox() as box:
+        box.write("boring", [_msg("assistant", "טקסט", now - 3 * DAY)])
+        box.set_hidden(["boring"])
+        assert "boring" not in box.index()
+        box.set_hidden([])                       # what /unhide-all writes
+        back = box.index()
+
+    assert "boring" in back, "restoring must re-render it from the transcript"
+    assert back["boring"]["last"] == now - 3 * DAY, "...with its real time intact"
+
+
+def test_a_hidden_session_reappears_if_it_goes_live_again():
+    """Hiding means 'get this out of my history', not 'blacklist forever'. If a terminal
+    picks the session up again it's live work and must be visible."""
+    now = int(time.time())
+    with Sandbox() as box:
+        box.write("revived", [_msg("assistant", "טקסט", now - 3 * DAY)])
+        box.set_hidden(["revived"])
+        assert "revived" not in box.index(), "hidden while nothing holds it"
+        extract.live_session_ids = lambda: {"revived"}          # a terminal resumed it
+        idx = box.raw_index()
+
+    assert "revived" in idx["sessions"][0]["id"], "a live session must override hiding"
+    assert idx["hidden"] == 0, "and it must not be counted as hidden while it's live"
 
 
 def test_cache_reuse_keeps_the_new_fields():

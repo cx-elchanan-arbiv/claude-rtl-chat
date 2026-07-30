@@ -28,6 +28,10 @@ import uuid
 BASE = os.path.dirname(os.path.abspath(__file__))
 PORT = 7778
 OWNED = os.path.join(BASE, "owned.json")
+# Sessions the user hid from the history strip. A VIEW list, not a delete: the transcripts
+# stay in ~/.claude/projects exactly as Claude Code wrote them (they're that terminal's data
+# too — resumable, and not ours to remove). extract.py skips these, /unhide brings them back.
+HIDDEN = os.path.join(BASE, "hidden.json")
 PROJECTS = os.path.expanduser("~/.claude/projects")
 
 # launchd runs with a minimal PATH, so resolve claude absolutely + give it a real PATH.
@@ -215,6 +219,32 @@ def write_owned(d):
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(d, fh, ensure_ascii=False)
     os.replace(tmp, OWNED)
+
+
+_hidden_lock = threading.Lock()
+
+
+def read_hidden():
+    try:
+        with open(HIDDEN, encoding="utf-8") as fh:
+            return list(json.load(fh) or [])
+    except Exception:
+        return []
+
+
+def write_hidden(ids):
+    tmp = HIDDEN + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(ids, fh, ensure_ascii=False)
+    os.replace(tmp, HIDDEN)
+
+
+def can_hide(sid):
+    """Only a CLOSED chat may be hidden. An owned one has its own ✕ (close → it drops to
+    history, where hiding it becomes available); hiding it there would make a chat we still
+    hold — and can still send to — vanish from every strip."""
+    with _owned_lock:
+        return sid not in read_owned()
 
 
 def transcript_exists(sid):
@@ -555,6 +585,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 pass
             return self._json(200, {"status": "closed"})
+
+        if self.path in ("/hide", "/unhide", "/unhide-all"):
+            # Hide/restore in the history strip. Nothing is deleted — see HIDDEN above.
+            sid = body.get("id")
+            with _hidden_lock:
+                ids = read_hidden()
+                if self.path == "/unhide-all":
+                    ids = []
+                elif not sid:
+                    return self._json(400, {"error": "missing id"})
+                elif self.path == "/hide":
+                    if not can_hide(sid):
+                        return self._json(400, {"error": "close it first (it's owned)"})
+                    if sid not in ids:
+                        ids.append(sid)
+                else:
+                    ids = [i for i in ids if i != sid]
+                write_hidden(ids)
+            try:
+                extract.main()   # apply to sessions.json at once, no 1s wait
+            except Exception:
+                pass
+            return self._json(200, {"status": "ok", "hidden": len(ids)})
 
         if self.path == "/dismiss-interrupted":   # user acknowledged the crashed-reply block
             clear_interrupted(body.get("id"))

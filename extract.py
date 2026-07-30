@@ -39,6 +39,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 INDEX = os.path.join(BASE, "sessions.json")
 CACHE = os.path.join(BASE, "_cache.json")
 OWNED = os.path.join(BASE, "owned.json")   # sessions this V2 chat created/manages
+HIDDEN = os.path.join(BASE, "hidden.json")  # ids the user hid from history (serve.py /hide)
 PROJECTS = os.path.expanduser("~/.claude/projects")
 
 ACTIVE_SECONDS = 30 * 60
@@ -453,7 +454,12 @@ def _run():
             owned = json.load(fh)          # {id: {created, title}}
     except Exception:
         owned = {}
-    seen_ids = set()
+    try:
+        with open(HIDDEN, encoding="utf-8") as fh:
+            hidden = set(json.load(fh) or [])
+    except Exception:
+        hidden = set()
+    seen_ids, hidden_now = set(), 0
 
     for path in files:
         sid = os.path.splitext(os.path.basename(path))[0]
@@ -462,6 +468,15 @@ def _run():
         sig = f"{st.st_mtime_ns}:{st.st_size}"      # precise change key: catches sub-second writes
         mdname = f"s-{sid}.md"
         mdpath = os.path.join(BASE, mdname)
+
+        # Hidden from history: skip BEFORE rendering — a hidden 2MB transcript must not be
+        # re-rendered every second, and dropping it from `keep` reclaims its s-<id>.md too.
+        # It comes back on its own if a live process picks the session up again (unknown
+        # liveness counts as "not live", so hidden stays hidden); nothing is ever deleted
+        # from ~/.claude/projects — /unhide brings it straight back.
+        if sid in hidden and sid not in owned and not (live_ids and sid in live_ids):
+            hidden_now += 1
+            continue
         keep.add(mdname)
 
         c = cache.get(sid)
@@ -522,8 +537,10 @@ def _run():
         })
     sessions.sort(key=lambda s: s["last"], reverse=True)   # real activity, not file mtime
 
-    write_atomic(INDEX, json.dumps({"generated": int(now), "sessions": sessions},
-                                   ensure_ascii=False))
+    # "hidden" = how many we actually held back this run (not the size of hidden.json,
+    # which can list ids that already fell out of the window) → the page's restore button.
+    write_atomic(INDEX, json.dumps({"generated": int(now), "hidden": hidden_now,
+                                    "sessions": sessions}, ensure_ascii=False))
     write_atomic(CACHE, json.dumps(new_cache, ensure_ascii=False))
 
     for f in glob.glob(os.path.join(BASE, "s-*.md")):

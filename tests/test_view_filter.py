@@ -28,19 +28,30 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import jsbridge  # noqa: E402
 import run  # noqa: E402
 
-SYMBOLS = ["actAt", "isWeb", "inView", "originNote", "histOn"]
+SYMBOLS = ["VIEW_MODES", "JOB_MODES", "normalizeViewMode", "normalizeJobMode",
+           "actAt", "isWeb", "inSource", "inKind", "inView", "originNote", "histOn",
+           "mostRecent", "neighbourOf", "pinLabel", "pickAfterFilter"]
 
 # the four kinds of tab that share the strip
 WEB = {"id": "w", "owned": True, "origin": "web", "bg": False}
 ADOPTED = {"id": "a", "owned": True, "origin": "mixed", "bg": False}
 TERMINAL = {"id": "t", "owned": False, "origin": "terminal", "bg": False}
 JOB = {"id": "j", "owned": False, "origin": "terminal", "bg": True}
+WEB_JOB = {"id": "wj", "owned": True, "origin": "mixed", "bg": True}   # adopted bg job
+ALL_FOUR = [WEB, ADOPTED, TERMINAL, JOB]
 
 
 def _eval(script):
     if not jsbridge.node_available():
         raise run.SkipTest("node is not installed")
-    return jsbridge.run(SYMBOLS, "let viewMode = 'all', showHistory = false;\n" + script)
+    return jsbridge.run(
+        SYMBOLS, "let viewMode = 'both', jobMode = 'both', showHistory = false;\n" + script)
+
+
+def _in_view(sessions, view="both", job="both"):
+    """Which of `sessions` survive a given (source, kind) filter combination."""
+    return _eval("viewMode = %s; jobMode = %s;\nconsole.log(JSON.stringify(%s.map(inView)));"
+                 % (json.dumps(view), json.dumps(job), json.dumps(sessions)))
 
 
 def _call(fn, session):
@@ -75,41 +86,63 @@ def test_isWeb_trusts_owned_even_before_the_first_web_message():
         "a chat we own must never be filtered into the terminal-only view"
 
 
-def test_view_all_hides_nothing():
-    got = _eval("""
-      viewMode = 'all';
-      console.log(JSON.stringify([%s, %s, %s, %s].map(inView)));
-    """ % (json.dumps(WEB), json.dumps(ADOPTED), json.dumps(TERMINAL), json.dumps(JOB)))
-    assert got == [True, True, True, True], f"'all' must show everything, got {got}"
+def test_both_hides_nothing():
+    """The default. Renamed from 'all' — the label now says WHAT it shows
+    ("דפדפן + טרמינל"), because "הכל" told you nothing about what was in the strip."""
+    got = _in_view(ALL_FOUR)
+    assert got == [True, True, True, True], f"the default must show everything, got {got}"
 
 
-def test_view_web_shows_only_ours():
-    got = _eval("""
-      viewMode = 'web';
-      console.log(JSON.stringify([%s, %s, %s, %s].map(inView)));
-    """ % (json.dumps(WEB), json.dumps(ADOPTED), json.dumps(TERMINAL), json.dumps(JOB)))
+def test_source_web_shows_only_ours():
+    got = _in_view(ALL_FOUR, view="web")
     assert got == [True, True, False, False], f"web view leaked terminal chats: {got}"
 
 
-def test_view_terminal_shows_only_mirrored():
-    got = _eval("""
-      viewMode = 'terminal';
-      console.log(JSON.stringify([%s, %s, %s, %s].map(inView)));
-    """ % (json.dumps(WEB), json.dumps(ADOPTED), json.dumps(TERMINAL), json.dumps(JOB)))
+def test_source_terminal_shows_only_mirrored():
+    got = _in_view(ALL_FOUR, view="terminal")
     assert got == [False, False, True, True], f"terminal view leaked our own chats: {got}"
 
 
-def test_the_two_filtered_views_are_complementary():
+def test_the_two_source_views_are_complementary():
     """No chat may fall through both filters — that's how a tab disappears for good."""
-    for s in (WEB, ADOPTED, TERMINAL, JOB):
-        pair = _eval("""
-          const s = %s;
-          viewMode = 'web'; const a = inView(s);
-          viewMode = 'terminal'; const b = inView(s);
-          console.log(JSON.stringify([a, b]));
-        """ % json.dumps(s))
-        assert pair.count(True) == 1, \
-            f"{s['id']}: appears in {pair.count(True)} of the two views, must be exactly 1"
+    for s in ALL_FOUR:
+        web, term = _in_view([s], view="web")[0], _in_view([s], view="terminal")[0]
+        assert [web, term].count(True) == 1, \
+            f"{s['id']}: appears in {[web, term].count(True)} of the two source views, must be 1"
+
+
+def test_kind_filter_splits_chats_from_jobs():
+    """The second selector, on its own axis: conversations you talked in vs. background
+    agents the terminal spawned."""
+    assert _in_view(ALL_FOUR, job="chats") == [True, True, True, False], "a job leaked into 'chats'"
+    assert _in_view(ALL_FOUR, job="jobs") == [False, False, False, True], "'jobs' must show only jobs"
+    for s in ALL_FOUR:
+        pair = [_in_view([s], job="chats")[0], _in_view([s], job="jobs")[0]]
+        assert pair.count(True) == 1, f"{s['id']}: must be in exactly one of chats/jobs, got {pair}"
+
+
+def test_the_filters_are_independent():
+    """The whole point of two selectors instead of one list: every combination is reachable.
+    An adopted bg job is the case that proves the axes really are independent — it's ours
+    AND a job, so it must survive web+jobs and vanish from web+chats."""
+    grid = {(v, j): _in_view([WEB_JOB], view=v, job=j)[0]
+            for v in ("both", "web", "terminal") for j in ("both", "chats", "jobs")}
+    assert grid[("web", "jobs")] is True, "an adopted job must show under דפדפן + ג'ובים"
+    assert grid[("web", "chats")] is False, "...and must not show under דפדפן + שיחות"
+    assert grid[("terminal", "jobs")] is False, "it's ours, not the terminal's"
+    assert grid[("both", "both")] is True, "and it must be visible with no filtering at all"
+
+    # a terminal job: the mirror image
+    assert _in_view([JOB], view="terminal", job="jobs")[0] is True
+    assert _in_view([JOB], view="web", job="jobs")[0] is False
+
+
+def test_every_session_is_reachable_by_some_combination():
+    """A session that no combination can show would be invisible forever."""
+    for s in ALL_FOUR + [WEB_JOB]:
+        shown = [(v, j) for v in ("both", "web", "terminal") for j in ("both", "chats", "jobs")
+                 if _in_view([s], view=v, job=j)[0]]
+        assert shown, f"{s['id']} is unreachable in every filter combination"
 
 
 def test_history_mode_needs_history_to_engage():
@@ -127,6 +160,99 @@ def test_history_mode_needs_history_to_engage():
     """)
     assert got == [True, False, False], \
         f"history mode must need BOTH the toggle and a non-empty history, got {got}"
+
+
+def test_landing_after_a_tab_disappears_picks_the_newest():
+    """THE BUG (2026-07-30, reported with screenshots): hiding a history tab dropped the
+    user on a 0-turn session from 06:45 that rendered as an empty "ממתין לתשובה הראשונה…"
+    screen — and then followed them into the open view as a pinned tab. The fallback used
+    pool[0], i.e. the first entry of the deliberately-stable tab order, which has nothing
+    to do with recency and had that junk session at the front."""
+    junk = {"id": "junk", "last": 1000, "turns": 0}          # what it used to choose
+    real = {"id": "real", "last": 9000, "turns": 12}
+    older = {"id": "older", "last": 5000, "turns": 4}
+    got = _eval("console.log(JSON.stringify(mostRecent(%s)));"
+                % json.dumps([junk, real, older]))           # junk deliberately first
+    assert got["id"] == "real", \
+        f"must land on the newest real activity, not the head of the tab order (got {got['id']})"
+
+    assert _eval("console.log(JSON.stringify(mostRecent([])));") is None, \
+        "an empty pool must yield nothing to select, not a crash"
+    assert _eval("console.log(JSON.stringify(mostRecent(%s)));" % json.dumps([junk]))["id"] == "junk", \
+        "one candidate is still the answer, empty or not"
+
+
+def test_closing_a_tab_hands_over_to_its_neighbour():
+    """Like a browser: the tab beside the one you closed, never a jump across the strip."""
+    strip = ["a", "b", "c"]
+    nb = lambda ids, i: _eval("console.log(JSON.stringify(neighbourOf(%s, %s)));"
+                              % (json.dumps(ids), json.dumps(i)))
+    assert nb(strip, "b") == "c", "middle tab → the next one"
+    assert nb(strip, "c") == "b", "last tab → the previous one"
+    assert nb(strip, "a") == "b", "first tab → the next one"
+    assert nb(["only"], "only") is None, "closing the last tab leaves nothing selected"
+    assert nb(strip, "missing") is None, "an id that isn't in the strip has no neighbour"
+
+
+def test_a_saved_mode_from_the_old_naming_still_works():
+    """The source filter's first option was called 'all' before it was renamed to say what
+    it shows ("דפדפן + טרמינל"). A browser that still has 'all' in localStorage must land on
+    the equivalent mode — an unrecognised value would make every predicate fall through and
+    show an empty strip."""
+    assert _eval("console.log(JSON.stringify(normalizeViewMode('all')));") == "both", \
+        "the legacy 'all' must migrate to 'both', not become an unknown mode"
+    assert _eval("console.log(JSON.stringify(normalizeViewMode('web')));") == "web"
+    assert _eval("console.log(JSON.stringify(normalizeViewMode(null)));") == "both"
+    assert _eval("console.log(JSON.stringify(normalizeViewMode('nonsense')));") == "both", \
+        "any junk value must fall back to showing everything, never to showing nothing"
+    assert _eval("console.log(JSON.stringify(normalizeJobMode('jobs')));") == "jobs"
+    assert _eval("console.log(JSON.stringify(normalizeJobMode('')));") == "both"
+
+
+def test_a_kept_tab_never_looks_like_it_belongs():
+    """THE CONFUSION (2026-07-30, reported twice with screenshots): a closed conversation sat
+    in the row of OPEN chats and read as open — it was only there because it was the one
+    being read, but nothing said so. Every "kept" state must announce itself."""
+    def pin(is_hist, is_pinned, kept):
+        return _eval("console.log(JSON.stringify(pinLabel(%s, %s, %s)));"
+                     % (json.dumps(is_hist), json.dumps(is_pinned), json.dumps(kept)))
+
+    normal = pin(False, False, False)
+    assert normal["prefix"] == "" and normal["note"] == "", \
+        "a tab that belongs in the strip must carry no marker at all"
+
+    closed_in_open_row = pin(True, True, False)
+    assert "היסטוריה" in closed_in_open_row["prefix"], \
+        "a closed chat held in the open row MUST say היסטוריה — this is the reported bug"
+    assert "רק כי אתה קורא אותה" in closed_in_open_row["note"]
+
+    open_in_history_row = pin(False, True, False)
+    assert "פתוח" in open_in_history_row["prefix"], "and the mirror case must say פתוח"
+
+    filtered_out = pin(False, False, True)
+    assert "מחוץ לסינון" in filtered_out["note"], \
+        "a tab the filter excludes, kept only because you're reading it, must say so"
+
+
+def test_switching_filters_lands_you_somewhere_visible():
+    """Caught in the browser: the candidate search used the already-FILTERED list, so
+    switching to a mode that list had nothing for left the user parked on a chat the new
+    filter hides (a job showing under 'שיחות')."""
+    all_sessions = [JOB, TERMINAL, WEB]
+
+    def pick(current, view="both", job="both"):
+        return _eval("viewMode = %s; jobMode = %s;\nconsole.log(JSON.stringify(pickAfterFilter(%s, %s)));"
+                     % (json.dumps(view), json.dumps(job), json.dumps(all_sessions), json.dumps(current)))
+
+    assert pick("j", job="chats") == "t", \
+        "on a job and switching to 'שיחות' → must move to a real chat, got the job again"
+    assert pick("t", job="chats") == "t", "already visible → must not be moved at all"
+    assert pick("t", view="web") == "w", "a terminal chat under 'דפדפן' → move to a web chat"
+    assert pick("nosuch") == "nosuch", "an unknown selection is left alone (a pending new chat)"
+    # nothing matches → stay put rather than blanking the screen
+    assert _eval("viewMode = 'web'; jobMode = 'jobs';\nconsole.log(JSON.stringify(pickAfterFilter(%s, 't')));"
+                 % json.dumps([TERMINAL])) == "t", \
+        "when no session matches the new filter, keep showing what you had"
 
 
 def test_originNote_explains_a_background_job():
