@@ -1009,12 +1009,17 @@
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, force: !!force })
       });
+      const j = await res.json().catch(() => ({}));
+      if (res.status === 409 && j.warning === 'bg-running') {
+        // NOT forceable — claude refuses to resume a session a bg agent holds. Just
+        // re-tick: the note re-renders as the "running job" variant and explains itself.
+        return tick();
+      }
       if (res.status === 409) {   // a live terminal is open in this project
         if (confirm('⚠️ נראה שטרמינל חי פתוח בפרויקט הזה.\nכתיבה מהדפדפן במקביל לטרמינל עלולה לשבש את הסשן.\nלאמץ בכל זאת?'))
           return adoptSession(id, true);
         return;
       }
-      const j = await res.json();
       if (j.status === 'adopted' || j.status === 'already-owned') {
         selectedId = id; pendingId = id;
         localStorage.setItem('rtl-selected', id);
@@ -1206,11 +1211,26 @@
     if (owned) { elNote.style.display = 'none'; return; }
     elNote.style.display = sel ? 'block' : 'none';
     if (sel) {   // read-only terminal session → offer to adopt it (rebuild only on change)
-      const cur = elNote.querySelector('#adoptBtn');
-      if (!cur || cur.dataset.id !== sel.id) {
-        elNote.innerHTML = '👁️ שיחה זו נפתחה בטרמינל — צפייה בלבד. ' +
-          '<button id="adoptBtn" data-id="' + esc(sel.id) + '" ' +
+      // A running background job is the one case adoption CANNOT work: claude refuses to
+      // resume a session a bg agent holds, so offering the button would only produce a
+      // chat box whose every send fails. Say what it is and how to actually reach it.
+      const liveJob = !!(sel.bg && sel.active);
+      const key = sel.id + (sel.bg ? ':job' : '') + (liveJob ? ':live' : '');
+      if (elNote.dataset.key !== key) {
+        elNote.dataset.key = key;
+        const adopt = '<button id="adoptBtn" data-id="' + esc(sel.id) + '" ' +
           'title="הפוך לשיחה מנוהלת — לכתיבה ולסגירה">✋ אמץ שיחה זו</button>';
+        const idTag = ' · <code dir="ltr" title="session id — כך מגיעים אליו מהטרמינל">' +
+          esc(sel.id) + '</code>';
+        if (liveJob) {
+          elNote.innerHTML = '⚙︎ job שהטרמינל הריץ ברקע — <b>רץ עכשיו</b>, צפייה בלבד. ' +
+            'אי אפשר לאמץ אותו עד שיסתיים; להתחבר אליו מהטרמינל: <code dir="ltr">claude agents</code>' +
+            idTag;
+        } else if (sel.bg) {
+          elNote.innerHTML = '⚙︎ job שהטרמינל הריץ ברקע (הסתיים) — צפייה בלבד. ' + adopt + idTag;
+        } else {
+          elNote.innerHTML = '👁️ שיחה זו נפתחה בטרמינל — צפייה בלבד. ' + adopt;
+        }
       }
     }
   }
@@ -1523,6 +1543,22 @@
   // (turn crashed mid-write — API drop / kill). The server persists it to
   // s-<id>.interrupted; show it here so the text isn't silently lost.
   let interruptedBusy = false;
+  // The interrupted file holds one of two very different things: a reply that got cut off
+  // mid-stream (keep it — it's Claude's words), or a turn that never produced a token at
+  // all, marked on the first line by save_failure() in serve.py. Calling the second one
+  // "התשובה נקטעה" is a lie that cost an afternoon: six sends failed with rc=1 while the
+  // page cheerfully said "הסתיים".
+  const SEND_FAILED_MARK = '[send-failed]';
+  function parseInterrupted(raw) {
+    const txt = (raw || '').trim();
+    if (!txt.startsWith(SEND_FAILED_MARK)) return { failed: null, text: txt };
+    const nl = txt.indexOf('\n');
+    return {
+      failed: (nl < 0 ? txt : txt.slice(0, nl)).slice(SEND_FAILED_MARK.length).trim() || 'rc=?',
+      text: nl < 0 ? '' : txt.slice(nl + 1).trim(),
+    };
+  }
+
   async function renderInterrupted(sel) {
     if (!sel) return;
     const existing = () => document.getElementById('interrupted');
@@ -1539,12 +1575,17 @@
     interruptedBusy = false;
     if (sel.id !== selectedId) return;             // tab switched mid-fetch
     let b = existing();
-    if (!txt) { if (b) b.remove(); return; }
+    const { failed, text } = parseInterrupted(txt);
+    txt = text;
+    if (!txt && !failed) { if (b) b.remove(); return; }
     if (!b || b.parentNode !== elContent) {
       b = document.createElement('div'); b.id = 'interrupted'; b.className = 'turn assistant interrupted';
       elContent.appendChild(b);
     }
-    b.innerHTML = '<h3>🤖 Claude · <span class="intbadge">⚠️ התשובה נקטעה — לא נשמרה בתמלול</span></h3>' +
+    const head = failed
+      ? '<h3>⛔ שגיאת שליחה · <span class="intbadge">ההודעה לא נשלחה (' + esc(failed) + ')</span></h3>'
+      : '<h3>🤖 Claude · <span class="intbadge">⚠️ התשובה נקטעה — לא נשמרה בתמלול</span></h3>';
+    b.innerHTML = head +
       (window.marked ? marked.parse(boxToMd(txt.replace(/</g, '&lt;'))) : '<div style="white-space:pre-wrap">' + esc(txt) + '</div>') +
       '<div class="intactions"><button class="intDismiss">סגור הודעה זו</button></div>';
     b.querySelector('.intDismiss').onclick = async () => {

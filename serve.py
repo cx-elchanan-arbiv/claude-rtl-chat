@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -147,18 +148,51 @@ def clear_interrupted(sid):
         pass
 
 
-def save_interrupted(sid, text):
-    """Safety net: when a turn dies mid-reply (API error / kill / crash), the streamed
-    text was only ever live in /status and never reached the transcript. Persist it so
-    the browser can still show it instead of silently losing the reply."""
-    text = (text or "").strip()
-    if not text:
-        return
+def _write_interrupted(sid, text):
     try:
         with open(interrupted_path(sid), "w", encoding="utf-8") as f:
             f.write(text)
     except Exception:
         pass
+
+
+def save_interrupted(sid, text):
+    """Safety net: when a turn dies mid-reply (API error / kill / crash), the streamed
+    text was only ever live in /status and never reached the transcript. Persist it so
+    the browser can still show it instead of silently losing the reply."""
+    text = (text or "").strip()
+    if text:
+        _write_interrupted(sid, text)
+
+
+# First line of the interrupted file when the turn failed outright. index.html keys on this
+# exact marker to show "השליחה נכשלה" instead of "התשובה נקטעה" — change both or neither.
+SEND_FAILED_MARK = "[send-failed]"
+
+
+def stopped_by_user(rc):
+    """Was this exit our own /stop rather than a failure? SIGTERM shows up as -15 from
+    Popen, or as 143 when claude reports the signal itself. Pressing ⏹ must not raise a
+    "השליחה נכשלה" block."""
+    return rc in (-15, 143)
+
+
+def save_failure(sid, partial, rc, stderr_text):
+    """Show the user WHY a turn died. claude's stderr used to go to /dev/null, so a turn
+    that failed before emitting a single token looked identical to a turn that finished
+    with nothing to say: the browser flashed "התחיל… הסתיים" and left an unanswered message
+    on screen. Only /tmp/rtl-chat.log knew, in the form of a bare `rc=1`.
+
+    Real cases this covers: resuming a session a background agent still holds (claude
+    refuses outright), DNS/API failures during an outage, and a bad flag. The reason
+    reaches the page through the same channel the interrupted-reply block already uses."""
+    lines = [ln.rstrip() for ln in (stderr_text or "").splitlines() if ln.strip()]
+    tail = "\n".join(lines[-8:])[:1500] or "(claude יצא בלי הודעת שגיאה — ראה את לוג השרת)"
+    blocks = [f"{SEND_FAILED_MARK} rc={rc}", "", tail]
+    partial = (partial or "").strip()
+    if partial:
+        blocks += ["", "— מה שכן הוזרם לפני הכישלון —", partial]
+    _write_interrupted(sid, "\n".join(blocks))
 
 
 def _lock_for(sid):
@@ -247,6 +281,10 @@ def run_claude(sid, text):
     clear_interrupted(sid)   # this retry supersedes any earlier crashed attempt
     partial = [""]   # live assistant text for this turn, streamed to the browser via /status
     ok = False       # did the turn finish cleanly? if not, we keep the streamed text
+    rc = None        # claude's exit code, for the failure block
+    # stderr to a temp FILE, not a pipe: we're busy draining stdout for the whole run, and
+    # an unread stderr pipe that fills its buffer would deadlock the child mid-turn.
+    err_fh = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
     try:
         # start_new_session: run claude in its OWN process group/session so a restart
         # of THIS server (launchd kickstart of com.elchanan.rtl-chat) only kills serve.py
@@ -255,7 +293,7 @@ def run_claude(sid, text):
         # restart its own server used to nuke the very turn that issued the command.) /stop
         # still works: we SIGTERM the proc directly, not via serve.py's group.
         proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, text=True, env=env,
+                                stderr=err_fh, text=True, env=env,
                                 start_new_session=True)
         with _procs_lock:
             _procs[sid] = proc
@@ -293,16 +331,32 @@ def run_claude(sid, text):
                 if u.get("output_tokens"):
                     set_status(sid, tokens=u["output_tokens"])
         proc.wait(timeout=600)
-        ok = proc.returncode in (0, None)
+        rc = proc.returncode
+        ok = rc in (0, None)
         if not ok:
-            print(f"[send {sid[:8]}] rc={proc.returncode}", flush=True)
+            print(f"[send {sid[:8]}] rc={rc}", flush=True)
     except Exception as e:
         print(f"[send {sid[:8]}] error: {e}", flush=True)
     finally:
         with _procs_lock:
             _procs.pop(sid, None)
-        if not ok:                       # crashed/killed mid-reply → don't lose the text
-            save_interrupted(sid, partial[0])
+        err_text = ""
+        try:
+            err_fh.seek(0)
+            err_text = err_fh.read()
+        except Exception:
+            pass
+        try:
+            err_fh.close()
+        except Exception:
+            pass
+        if not ok:
+            # /stop is a user action, not a failure: it keeps the old behaviour — save the
+            # streamed partial, say nothing about errors.
+            if stopped_by_user(rc):
+                save_interrupted(sid, partial[0])
+            else:
+                save_failure(sid, partial[0], rc, err_text)
         clear_status(sid)
 
 
@@ -444,6 +498,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             cwd, mode = session_meta_from_transcript(sid)
             if not cwd or not os.path.isdir(cwd):
                 cwd = DEFAULT_CWD
+            # HARD stop (not forceable): a background agent is holding this exact session,
+            # and `claude -p --resume` refuses those — "currently running as a background
+            # agent (bg)". Adopting would hand over a chat box whose every send is
+            # guaranteed to fail, which is exactly what happened on 2026-07-30: six silent
+            # rc=1 sends before anyone knew why. Read-only mirroring keeps working.
+            try:
+                if sid in extract.live_bg_ids():
+                    return self._json(409, {"warning": "bg-running", "cwd": cwd})
+            except Exception:
+                pass                      # can't tell → fall through; a failed send now says why
             # safety: a live `claude` terminal in this project + a browser send would
             # have two processes resume the same transcript. Warn unless forced.
             if not body.get("force"):

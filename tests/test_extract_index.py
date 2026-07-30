@@ -225,6 +225,33 @@ def test_liveness_ignores_daemon_plumbing():
         "DEAD means a stale pid file is")
 
 
+def test_live_bg_ids_finds_only_running_background_agents():
+    """/adopt uses this to refuse a session a background agent is holding — `claude -p
+    --resume` rejects those outright, so adopting would hand over a chat box whose every
+    send fails (which is exactly what happened: six silent rc=1 sends)."""
+    versioned = "/Users/x/.local/share/claude/versions/2.1.220 --session-id %s"
+    fake_ps = {"111": versioned % "JOB", "222": versioned % "CHAT",
+               "333": "claude bg-spare --bg-spare /tmp/cc-daemon/spare/x.claim.sock"}
+    saved_procs = extract._claude_procs
+    with Sandbox() as box:
+        extract._claude_procs = lambda: dict(fake_ps)
+        for pid, sid, kind in (("111", "JOB", "bg"), ("222", "CHAT", "interactive"),
+                               ("333", "STALE-JOB", "bg"), ("999", "DEAD-JOB", "bg")):
+            with open(os.path.join(box.sessions_dir, pid + ".json"), "w") as fh:
+                json.dump({"pid": int(pid), "sessionId": sid, "kind": kind}, fh)
+        try:
+            bg = extract.live_bg_ids()
+            extract._claude_procs = lambda: None          # ps unusable → liveness unknown
+            unknown = extract.live_bg_ids()
+        finally:
+            extract._claude_procs = saved_procs
+
+    assert bg == {"JOB"}, (
+        f"expected only the running bg agent, got {sorted(bg)} — CHAT means an interactive "
+        "session is being blocked, STALE-JOB/DEAD-JOB mean a finished job still blocks adoption")
+    assert unknown == set(), "unknown liveness must fail OPEN — never block on a guess"
+
+
 def test_owned_chats_stay_open_and_are_web():
     """Browser-owned chats keep working as before: always 'open', always ours — including
     the placeholder for a chat created via /new that has no transcript yet."""

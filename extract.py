@@ -102,41 +102,57 @@ def _claude_pids():
 SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
 
 
-def live_session_ids():
-    """PRECISE 'which sessions are live in a terminal' signal: Claude Code writes
+def live_sessions():
+    """PRECISE 'which sessions are live' signal: Claude Code writes
     ~/.claude/sessions/<pid>.json for every running process, recording its exact
-    sessionId + cwd. We read those and keep only the ones whose pid is still a live
+    sessionId + cwd + kind. We read those and keep only the ones whose pid is still a live
     claude SESSION process per _claude_pids (the files linger after a crash, and the
-    daemon's spares hold on to theirs long after the job they hosted finished), giving
-    the precise set of session ids currently open in a terminal.
+    daemon's spares hold on to theirs long after the job they hosted finished).
 
-    Returns that set, or None when we can't tell — no `ps`, can't read the dir, or
-    claude is running yet no session file matches (the layout changed) — so the
-    caller falls back to live_counts(). An empty set means: ps worked, no claude
-    terminals → nothing is live."""
+    Returns {sessionId: kind} — kind being the daemon's own label, "bg" for a background
+    agent and "interactive" for a session someone is sitting in front of — or None when we
+    can't tell: no `ps`, can't read the dir, or claude is running yet no session file
+    matches (the layout changed), so the caller falls back to live_counts(). An empty dict
+    means: ps worked, nothing is live."""
     pids = _claude_pids()
     if pids is None:
         return None
     if not pids:
-        return set()                 # definitively nothing live
+        return {}                    # definitively nothing live
     live_pids = set(pids)
     try:
         files = os.listdir(SESSIONS_DIR)
     except Exception:
         return None
-    ids, matched = set(), False
+    out, matched = {}, False
     for fn in files:
         if not fn.endswith(".json") or fn[:-len(".json")] not in live_pids:
             continue                 # not a session file, or stale (pid not running)
         matched = True
         try:
             with open(os.path.join(SESSIONS_DIR, fn), encoding="utf-8") as fh:
-                sid = (json.load(fh) or {}).get("sessionId")
+                meta = json.load(fh) or {}
         except Exception:
             continue
+        sid = meta.get("sessionId")
         if sid:
-            ids.add(sid)
-    return ids if matched else None  # no file matched a live pid → let caller fall back
+            out[sid] = meta.get("kind")
+    return out if matched else None   # no file matched a live pid → let caller fall back
+
+
+def live_session_ids():
+    """Just the ids from live_sessions() (None when liveness is unknown)."""
+    live = live_sessions()
+    return None if live is None else set(live)
+
+
+def live_bg_ids():
+    """Sessions a live BACKGROUND AGENT is holding right now. `claude -p --resume` refuses
+    those outright ("currently running as a background agent (bg)"), so /adopt uses this to
+    stop handing you a chat box that cannot possibly send. Unknown liveness → empty set:
+    fail open and let the (now visible) send error speak for itself."""
+    live = live_sessions()
+    return {sid for sid, kind in (live or {}).items() if kind == "bg"}
 
 
 def live_counts():
