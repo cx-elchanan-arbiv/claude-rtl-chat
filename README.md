@@ -51,6 +51,13 @@ cd claude-rtl-chat
 ./install.sh        # launchd agent on http://127.0.0.1:7778
 ```
 
+## Tests
+```bash
+python3 tests/run.py     # no dependencies; node needed for the browser-side tests
+```
+See [tests/README.md](tests/README.md) — each file documents the production bug it
+guards against.
+
 ## Privacy & safety
 - 100% local (`127.0.0.1`). Nothing is uploaded.
 - Conversations, uploads, usage and personal notes are git-ignored — never committed.
