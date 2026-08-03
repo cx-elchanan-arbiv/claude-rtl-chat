@@ -25,6 +25,7 @@ its naming convention. `tests/run.py` is the fallback that always works.
 | `test_view_filter.py` | The tab strip's whole rule set: the two independent view filters and every combination, where the selection lands when a tab disappears, and how a tab that's only kept for you announces itself |
 | `test_hide_api.py` | Hiding a conversation from history — the list round-trip, a corrupt list, and the rule that an owned chat can't be hidden |
 | `test_send_failure.py` | The send-failure path: `save_failure()` + `parseInterrupted()` + the stderr capture in `run_claude()` itself (a turn that dies must say why) |
+| `test_pad_view.py` | The render pad's reading layout: the full-bleed table, breakable inline code, the per-block horizontal scroller, zoom and splitter clamping — mostly static CSS assertions, because the failure mode is a well-meaning one-line edit |
 
 Each test file opens with the bug it exists to prevent. Read that header before
 changing the code it covers — most of these guard against a specific failure that
