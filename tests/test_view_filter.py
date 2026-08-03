@@ -30,7 +30,7 @@ import run  # noqa: E402
 
 SYMBOLS = ["VIEW_MODES", "JOB_MODES", "normalizeViewMode", "normalizeJobMode",
            "actAt", "isWeb", "inSource", "inKind", "inView", "originNote", "histOn",
-           "mostRecent", "neighbourOf", "pinLabel", "pickAfterFilter"]
+           "mostRecent", "neighbourOf", "pinLabel", "pickAfterFilter", "livenessNote"]
 
 # the four kinds of tab that share the strip
 WEB = {"id": "w", "owned": True, "origin": "web", "bg": False}
@@ -253,6 +253,28 @@ def test_switching_filters_lands_you_somewhere_visible():
     assert _eval("viewMode = 'web'; jobMode = 'jobs';\nconsole.log(JSON.stringify(pickAfterFilter(%s, 't')));"
                  % json.dumps([TERMINAL])) == "t", \
         "when no session matches the new filter, keep showing what you had"
+
+
+def test_the_page_admits_when_open_is_only_a_guess():
+    """extract has two fallbacks for "what's open" when it can't observe processes, and
+    both are guesses. The status line must say so — a guess presented as fact is what let
+    finished background jobs sit in the open row looking live."""
+    def note(kind):
+        return _eval("console.log(JSON.stringify(livenessNote(%s)));" % json.dumps(kind))
+
+    exact = note("exact")
+    assert exact["suffix"] == "", "an observed run must not hedge — that would cry wolf"
+    assert exact["title"], "but it should still explain how it knows, on hover"
+
+    for guessy in ("project", "time"):
+        n = note(guessy)
+        assert "משוער" in n["suffix"], f"'{guessy}' is a guess and must be labelled as one"
+        assert "ניחוש" in n["title"], f"'{guessy}' must explain WHY it's uncertain"
+
+    assert note("project")["title"] != note("time")["title"], \
+        "the two fallbacks fail differently — the explanation should say which one it is"
+    assert note(undefined_kind := None)["suffix"] == "", \
+        "an index from an older serve.py (no liveness field) must not claim uncertainty"
 
 
 def test_originNote_explains_a_background_job():

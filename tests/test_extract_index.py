@@ -78,6 +78,7 @@ class Sandbox:
         os.makedirs(self.sessions_dir)
         self.saved = {k: getattr(extract, k) for k in self.KEYS}
         self.saved_live = extract.live_session_ids
+        self.saved_counts = extract.live_counts
         extract.BASE = self.dir
         extract.PROJECTS = os.path.dirname(self.projects)
         extract.SESSIONS_DIR = self.sessions_dir
@@ -92,6 +93,7 @@ class Sandbox:
         for k, v in self.saved.items():
             setattr(extract, k, v)
         extract.live_session_ids = self.saved_live
+        extract.live_counts = self.saved_counts
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def write(self, sid, events, mtime=None):
@@ -260,6 +262,57 @@ def test_live_bg_ids_finds_only_running_background_agents():
         f"expected only the running bg agent, got {sorted(bg)} — CHAT means an interactive "
         "session is being blocked, STALE-JOB/DEAD-JOB mean a finished job still blocks adoption")
     assert unknown == set(), "unknown liveness must fail OPEN — never block on a guess"
+
+
+def test_a_guessed_open_is_labelled_as_a_guess():
+    """When we can't observe which sessions a process holds, extract falls back to
+    guessing — and the index must SAY so, per session and for the run as a whole.
+    Presenting that guess as fact is exactly how finished background jobs sat in the open
+    row for weeks looking like live conversations."""
+    now = int(time.time())
+    with Sandbox() as box:
+        box.write("recent", [_msg("assistant", "דיבר עכשיו", now - 60)])
+        box.write("old", [_msg("assistant", "מזמן", now - 5 * DAY)])
+
+        extract.live_session_ids = lambda: None           # no process signal at all
+        extract.live_counts = lambda: {}
+        idx = box.raw_index()
+        by_id = {s["id"]: s for s in idx["sessions"]}
+
+    assert idx["liveness"] == "time", f"the run must declare how it decided, got {idx.get('liveness')}"
+    assert by_id["recent"]["active"] is True, "the time window still marks it open..."
+    assert by_id["recent"]["guess"] is True, "...but it must be flagged as a guess"
+    assert by_id["old"]["guess"] is False, "a session we did NOT claim is open isn't a guess"
+
+
+def test_an_observed_open_is_not_labelled_a_guess():
+    """The normal path: we know exactly which sessions are held, so nothing is hedged."""
+    now = int(time.time())
+    with Sandbox() as box:
+        box.write("held", [_msg("assistant", "טקסט", now - 60)])
+        extract.live_session_ids = lambda: {"held"}
+        idx = box.raw_index()
+
+    assert idx["liveness"] == "exact", "an observed run must not be marked as guessing"
+    assert idx["sessions"][0]["active"] is True
+    assert idx["sessions"][0]["guess"] is False, \
+        "a session we actually observed must never be marked ≈ — that would cry wolf"
+
+
+def test_an_owned_chat_is_never_a_guess():
+    """Our own chats are open because WE hold them; no process detection involved."""
+    now = int(time.time())
+    with Sandbox() as box:
+        box.set_owned({"mine": {"created": now - 10, "title": "שיחה", "cwd": "/tmp",
+                                "perm": "read"}})
+        box.write("mine", [_msg("user", "היי", now - 5 * DAY, entrypoint="sdk-cli")])
+        extract.live_session_ids = lambda: None            # even with no signal at all
+        extract.live_counts = lambda: {}
+        idx = box.raw_index()
+
+    s = {x["id"]: x for x in idx["sessions"]}["mine"]
+    assert s["active"] is True and s["guess"] is False, \
+        "an owned chat is open by ownership, not by guesswork"
 
 
 def test_owned_chats_stay_open_and_are_web():

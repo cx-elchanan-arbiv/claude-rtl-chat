@@ -1467,6 +1467,22 @@
     return currentId;
   }
 
+  // When extract couldn't observe which sessions are held open (no `ps`), it falls back to
+  // guessing — "a terminal is open in this project" or "spoke recently". That guess is how
+  // dead background jobs sat in the open row for weeks, so the page must never present it
+  // as fact: it says so in the status line, and every guessed tab is marked ≈.
+  function livenessNote(liveness) {
+    if (liveness === 'project') {
+      return { suffix: ' · זיהוי משוער', title: 'לא הצלחנו לזהות אילו סשנים פתוחים בפועל — ' +
+        'ידוע רק שיש טרמינל פתוח בפרויקט, אז ה"פעילות" כאן היא ניחוש לפי מי דיבר לאחרונה.' };
+    }
+    if (liveness === 'time') {
+      return { suffix: ' · זיהוי משוער', title: 'אין לנו בכלל אות על תהליכים חיים — ' +
+        'מה שמסומן כפתוח הוא ניחוש לפי "דיבר בחצי השעה האחרונה".' };
+    }
+    return { suffix: '', title: 'מה שפתוח נקבע לפי התהליכים שמחזיקים את הסשנים בפועל.' };
+  }
+
   function originNote(s) {
     if (s.origin === 'web') return 'נפתח בדפדפן';
     if (s.origin === 'mixed') return 'התחיל בטרמינל, אומץ לדפדפן';
@@ -1492,10 +1508,11 @@
        : isHist ? '<span class="close" title="הסתר מההיסטוריה (הפיך — התמלול לא נמחק)">✕</span>'
        : '') +
       '<span class="name">' + esc(tabName(s)) + '</span>' +
-      '<span class="sub">' + pin.prefix +
+      '<span class="sub">' + pin.prefix + (s.guess ? '≈ ' : '') +
       (s.bg ? '⚙︎ job · ' : '') + esc(s.project) +
       ' · ' + fmtTime(actAt(s)) + '</span>';
-    tab.title = 'דאבל-קליק לשינוי שם · ' + esc(s.short) + ' · ' + originNote(s) + pin.note;
+    tab.title = 'דאבל-קליק לשינוי שם · ' + esc(s.short) + ' · ' + originNote(s) + pin.note +
+      (s.guess ? ' · ≈ "פתוח" כאן הוא ניחוש — לא הצלחנו לזהות תהליך שמחזיק את השיחה' : '');
     const closeEl = tab.querySelector('.close');
     if (closeEl) closeEl.onclick = (e) => {
       e.stopPropagation();
@@ -1780,8 +1797,10 @@
       window._active = active; window._history = history;   // for instant re-render on rename
       elDot.classList.add('live');
       const filtered = (viewMode !== 'both' || jobMode !== 'both');
+      const live = livenessNote(data.liveness);
       elStatus.textContent = 'חי · ' + active.length + ' פעיל' + (active.length === 1 ? '' : 'ים') +
-        (filtered ? ' · מסונן' : '') + ' · מתעדכן אוטומטית';
+        live.suffix + (filtered ? ' · מסונן' : '') + ' · מתעדכן אוטומטית';
+      elStatus.title = live.title;
       elHist.style.display = history.length ? 'inline-block' : 'none';
       elHist.className = showHistory ? 'on' : '';
       elHist.textContent = (showHistory ? '▾ ' : '▸ ') + 'היסטוריה (' + history.length + ')';

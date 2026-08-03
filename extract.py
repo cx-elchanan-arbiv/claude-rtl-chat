@@ -448,6 +448,13 @@ def _run():
     sessions, keep = [], set()
     live_ids = live_session_ids()   # exact set of sids live in a terminal (or None)
     live = live_counts() if live_ids is None else {}   # fallback count, only if needed
+    # How we know what's open, so the page can SAY when it doesn't really know:
+    #   exact   — the session ids a live process actually holds
+    #   project — a terminal is open in this project, but not which session (top-K by
+    #             recency, i.e. a guess)
+    #   time    — no process signal at all; "spoke recently" (also a guess)
+    # Presenting a guess as fact is what made dead background jobs look open for weeks.
+    liveness = "exact" if live_ids is not None else ("project" if live else "time")
     used = {}                 # how many we've marked active per project so far
     try:
         with open(OWNED, encoding="utf-8") as fh:
@@ -498,6 +505,7 @@ def _run():
         # Fallbacks when the precise signal is unavailable: an open terminal in this
         # project (top-K by recency), else "spoke within ACTIVE_SECONDS".
         projdir = os.path.basename(os.path.dirname(path))
+        guess = False          # is this session's "open" a guess rather than an observation?
         if live_ids is not None:
             is_active = sid in live_ids
         elif live:
@@ -505,10 +513,13 @@ def _run():
             is_active = used.get(projdir, 0) < k
             if is_active:
                 used[projdir] = used.get(projdir, 0) + 1
+            guess = is_active
         else:
             is_active = (now - last) <= ACTIVE_SECONDS   # last real message, not mtime
+            guess = is_active
         if sid in owned:
             is_active = True   # browser chats stay "open" even when no process runs
+            guess = False      # we own it — nothing is being guessed
 
         new_cache[sid] = {"sig": sig, "mtime": mt, "snippet": snippet, "turns": turns,
                           "tokens": tokens, "out": out, "title": title,
@@ -519,7 +530,7 @@ def _run():
             "project": project_label(os.path.dirname(path)),
             "snippet": snippet, "title": title, "mtime": mt, "turns": turns,
             "tokens": tokens, "out": out, "last": last, "origin": origin, "bg": bg,
-            "active": is_active, "owned": sid in owned, "md": mdname,
+            "active": is_active, "guess": guess, "owned": sid in owned, "md": mdname,
         })
 
     # owned chats with no transcript yet (just created via /new) → placeholder tab
@@ -533,14 +544,15 @@ def _run():
             "mtime": meta.get("created", int(now)), "turns": 0,
             "tokens": 0, "out": 0, "last": meta.get("created", int(now)),
             "origin": "web", "bg": False,
-            "active": True, "owned": True, "md": None,
+            "active": True, "guess": False, "owned": True, "md": None,
         })
     sessions.sort(key=lambda s: s["last"], reverse=True)   # real activity, not file mtime
 
     # "hidden" = how many we actually held back this run (not the size of hidden.json,
     # which can list ids that already fell out of the window) → the page's restore button.
     write_atomic(INDEX, json.dumps({"generated": int(now), "hidden": hidden_now,
-                                    "sessions": sessions}, ensure_ascii=False))
+                                    "liveness": liveness, "sessions": sessions},
+                                   ensure_ascii=False))
     write_atomic(CACHE, json.dumps(new_cache, ensure_ascii=False))
 
     for f in glob.glob(os.path.join(BASE, "s-*.md")):
